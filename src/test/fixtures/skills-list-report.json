@@ -1,0 +1,98 @@
+{
+  "bundled": [
+    {
+      "name": "hyseed",
+      "files": 4,
+      "bytes": 15180,
+      "description": "Search and read a local hyseed knowledge base over MCP: hybrid keyword and semantic search, fetching documents or single sections, listing by type or tag, walking the link graph (neighbours, paths, influence, supersession chains) and reading version history. Use when asked what is known about a topic, where something is documented, what a project, decision or lesson says, how documents relate to each other, or before adding or updating any document. Writes and maintenance live in the hyseed-manage skill."
+    },
+    {
+      "name": "hyseed-manage",
+      "files": 4,
+      "bytes": 20348,
+      "description": "Write and maintain a local hyseed knowledge base over MCP: create, update, link, soft-delete and restore documents, read version history and diffs, run health checks, near-duplicate scans, embedding-queue operations and scheduled tasks, and drive the hyseed CLI for bulk ingest, import, export, prune and reindex. Use when asked to save, record, correct, version, connect or remove knowledge, audit the base, fix the embedding queue or the scheduler, or load documents in bulk."
+    }
+  ],
+  "targets": [
+    {
+      "agent": "claude",
+      "scope": "global",
+      "skills_dir": "<SANDBOX_HOME>\\.claude\\skills",
+      "mcp_file": "<SANDBOX_HOME>\\.claude.json",
+      "mcp_kind": "json",
+      "skills": {
+        "hyseed": "absent",
+        "hyseed-manage": "absent"
+      },
+      "mcp": "absent",
+      "legacy": {
+        "skills": [],
+        "mcp": "absent"
+      }
+    },
+    {
+      "agent": "claude",
+      "scope": "project",
+      "skills_dir": "<WORKSPACE>\\.claude\\skills",
+      "mcp_file": "<WORKSPACE>\\.mcp.json",
+      "mcp_kind": "json",
+      "skills": {
+        "hyseed": "absent",
+        "hyseed-manage": "absent"
+      },
+      "mcp": "modified",
+      "legacy": {
+        "skills": [],
+        "mcp": "absent"
+      }
+    },
+    {
+      "agent": "codex",
+      "scope": "global",
+      "skills_dir": "<SANDBOX_HOME>\\.codex\\skills",
+      "mcp_file": "<SANDBOX_HOME>\\.codex\\config.toml",
+      "mcp_kind": "toml",
+      "skills": {
+        "hyseed": "absent",
+        "hyseed-manage": "absent"
+      },
+      "mcp": "absent",
+      "legacy": {
+        "skills": [],
+        "mcp": "absent"
+      }
+    },
+    {
+      "agent": "cline",
+      "scope": "global",
+      "skills_dir": "<SANDBOX_HOME>\\.cline\\skills",
+      "mcp_file": "<SANDBOX_HOME>\\.cline\\data\\settings\\cline_mcp_settings.json",
+      "mcp_kind": "json",
+      "skills": {
+        "hyseed": "absent",
+        "hyseed-manage": "absent"
+      },
+      "mcp": "absent",
+      "legacy": {
+        "skills": [],
+        "mcp": "absent"
+      }
+    },
+    {
+      "agent": "cline",
+      "scope": "project",
+      "skills_dir": "<WORKSPACE>\\.cline\\skills",
+      "mcp_file": null,
+      "mcp_kind": "skip",
+      "skills": {
+        "hyseed": "absent",
+        "hyseed-manage": "absent"
+      },
+      "mcp": "n/a",
+      "legacy": {
+        "skills": [],
+        "mcp": "n/a"
+      }
+    }
+  ]
+}

@@ -1,0 +1,273 @@
+{
+  "name": "kbmcp-vscode",
+  "displayName": "hyseed",
+  "description": "hyseed (formerly kb-mcp) local knowledge base inside VS Code: admin console, MCP/skills setup, vaults, and CLI commands.",
+  "version": "0.1.0",
+  "publisher": "limccn",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/limccn/kb-mcp-vscode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/limccn/kb-mcp-vscode/issues"
+  },
+  "homepage": "https://github.com/limccn/kb-mcp-vscode#readme",
+  "icon": "resources/icon.png",
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "knowledge base",
+    "markdown",
+    "mcp",
+    "rag",
+    "search",
+    "vault",
+    "hyseed"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "kbmcp.openAdmin",
+        "title": "hyseed: Open admin console"
+      },
+      {
+        "command": "kbmcp.startServer",
+        "title": "hyseed: Start admin server"
+      },
+      {
+        "command": "kbmcp.stopServer",
+        "title": "hyseed: Stop admin server"
+      },
+      {
+        "command": "kbmcp.restartServer",
+        "title": "hyseed: Restart admin server"
+      },
+      {
+        "command": "kbmcp.openInBrowser",
+        "title": "hyseed: Open admin console in browser"
+      },
+      {
+        "command": "kbmcp.showRuntimeInfo",
+        "title": "hyseed: Show runtime info"
+      },
+      {
+        "command": "kbmcp.showLogs",
+        "title": "hyseed: Show logs"
+      },
+      {
+        "command": "kbmcp.showMcpStatus",
+        "title": "hyseed: Show MCP status"
+      },
+      {
+        "command": "kbmcp.installAgentSkills",
+        "title": "hyseed: Install agent skills"
+      },
+      {
+        "command": "kbmcp.removeAgentSkills",
+        "title": "hyseed: Remove agent skills"
+      },
+      {
+        "command": "kbmcp.showSkillsState",
+        "title": "hyseed: Show skills state"
+      },
+      {
+        "command": "kbmcp.createVault",
+        "title": "hyseed: Create vault"
+      },
+      {
+        "command": "kbmcp.switchVault",
+        "title": "hyseed: Switch vault"
+      },
+      {
+        "command": "kbmcp.clearProjectVault",
+        "title": "hyseed: Clear project vault pin"
+      },
+      {
+        "command": "kbmcp.listVaults",
+        "title": "hyseed: List vaults"
+      },
+      {
+        "command": "kbmcp.cli.search",
+        "title": "hyseed: CLI search"
+      },
+      {
+        "command": "kbmcp.cli.get",
+        "title": "hyseed: CLI get document"
+      },
+      {
+        "command": "kbmcp.cli.list",
+        "title": "hyseed: CLI list documents"
+      },
+      {
+        "command": "kbmcp.cli.add",
+        "title": "hyseed: CLI add document"
+      },
+      {
+        "command": "kbmcp.cli.ingest",
+        "title": "hyseed: CLI ingest documents"
+      },
+      {
+        "command": "kbmcp.cli.import",
+        "title": "hyseed: CLI import Markdown"
+      },
+      {
+        "command": "kbmcp.cli.export",
+        "title": "hyseed: CLI export Markdown"
+      },
+      {
+        "command": "kbmcp.cli.doctor",
+        "title": "hyseed: CLI doctor"
+      },
+      {
+        "command": "kbmcp.cli.stats",
+        "title": "hyseed: CLI stats"
+      },
+      {
+        "command": "kbmcp.cli.reindex",
+        "title": "hyseed: CLI reindex"
+      },
+      {
+        "command": "kbmcp.cli.diff-check",
+        "title": "hyseed: CLI diff-check"
+      },
+      {
+        "command": "kbmcp.cli.history",
+        "title": "hyseed: CLI history"
+      },
+      {
+        "command": "kbmcp.cli.vaultList",
+        "title": "hyseed: CLI vault list"
+      },
+      {
+        "command": "kbmcp.cli.vaultCreate",
+        "title": "hyseed: CLI vault create"
+      },
+      {
+        "command": "kbmcp.cli.vaultSwitch",
+        "title": "hyseed: CLI vault switch"
+      },
+      {
+        "command": "kbmcp.cli.vaultStatus",
+        "title": "hyseed: CLI vault status"
+      },
+      {
+        "command": "kbmcp.cli.skillsList",
+        "title": "hyseed: CLI skills list"
+      },
+      {
+        "command": "kbmcp.cli.skillsShow",
+        "title": "hyseed: CLI skills show"
+      },
+      {
+        "command": "kbmcp.cli.skillsAdd",
+        "title": "hyseed: CLI skills add"
+      },
+      {
+        "command": "kbmcp.cli.skillsRemove",
+        "title": "hyseed: CLI skills remove"
+      },
+      {
+        "command": "kbmcp.cli.serveHttp",
+        "title": "hyseed: CLI serve (HTTP)"
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "kbmcp.vscode",
+        "label": "hyseed"
+      }
+    ],
+    "configuration": {
+      "title": "hyseed",
+      "properties": {
+        "kbMcp.runtimePath": {
+          "type": "string",
+          "default": "",
+          "description": "Explicit path to the hyseed executable (hyseed.exe). Empty = auto-detect."
+        },
+        "kbMcp.adminPort": {
+          "type": "number",
+          "default": 51888,
+          "description": "Preferred port for the admin console. Falls back to the next free port when occupied."
+        },
+        "kbMcp.dataRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Explicit data root (sets KB_MCP_HOME for the spawned server). Empty = let the runtime resolve it."
+        },
+        "kbMcp.projectVault": {
+          "type": "string",
+          "default": "",
+          "description": "Workspace vault pinned for the MCP server (sets KB_MCP_VAULT). Empty = no pin."
+        },
+        "kbMcp.converterPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Explicit path to doc-convert.exe or a .cmd wrapper. Empty = auto-detect (KB_INGEST_CONVERTER, next to the resolved hyseed runtime, workspace ingestion-rt, then the bundled copy)."
+        }
+      }
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "kbmcp.restartServer",
+          "when": "activeWebviewPanelId == kbmcp.admin",
+          "group": "navigation"
+        },
+        {
+          "command": "kbmcp.openInBrowser",
+          "when": "activeWebviewPanelId == kbmcp.admin",
+          "group": "navigation"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "kbmcp",
+          "title": "hyseed",
+          "icon": "resources/activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "kbmcp": [
+        {
+          "id": "kbmcp.launcher",
+          "name": "hyseed",
+          "type": "webview"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/build-unit-tests.mjs && mocha \"out/unit/*.test.js\"",
+    "test:integration": "npm run build && node scripts/run-integration.mjs",
+    "check:docs": "node scripts/check-docs.mjs",
+    "vscode:prepublish": "node esbuild.mjs",
+    "package": "npm run build && node scripts/prepare-runtime.mjs && npm run check:docs && npx vsce package --target win32-x64 && node scripts/check-vsix-size.mjs"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.101.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "mocha": "^11.0.0",
+    "typescript": "^5.6.0"
+  }
+}

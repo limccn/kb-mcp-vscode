@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "dry_run": true,
+  "results": [
+    {
+      "agent": "claude",
+      "scope": "global",
+      "kind": "skills:hyseed",
+      "target": "<SANDBOX_HOME>\\.claude\\skills\\hyseed",
+      "action": "created",
+      "backup": null,
+      "note": null
+    },
+    {
+      "agent": "claude",
+      "scope": "global",
+      "kind": "skills:hyseed-manage",
+      "target": "<SANDBOX_HOME>\\.claude\\skills\\hyseed-manage",
+      "action": "created",
+      "backup": null,
+      "note": null
+    },
+    {
+      "agent": "claude",
+      "scope": "global",
+      "kind": "mcp",
+      "target": "<SANDBOX_HOME>\\.claude.json",
+      "action": "created",
+      "backup": null,
+      "note": null
+    }
+  ]
+}

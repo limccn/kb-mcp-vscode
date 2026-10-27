@@ -1,0 +1,12 @@
+node_modules/
+dist/
+out/
+resources/hyseed.exe
+resources/doc-convert.exe
+*.vsix
+.vscode-test/
+.env
+.env.*
+*.log
+.DS_Store
+Thumbs.db

@@ -1,0 +1,14 @@
+[
+  {
+    "name": "default",
+    "path": "default",
+    "description": "Default vault",
+    "sync_dir": null
+  },
+  {
+    "name": "demo",
+    "path": "demo",
+    "description": null,
+    "sync_dir": null
+  }
+]

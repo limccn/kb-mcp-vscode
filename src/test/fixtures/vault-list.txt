@@ -1,0 +1,5 @@
+Default vault: demo
+
+Available vaults:
+  default: default
+* demo: demo

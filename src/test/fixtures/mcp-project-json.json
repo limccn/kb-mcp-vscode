@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "hyseed": {
+      "type": "stdio",
+      "command": "<RUNTIME_EXE>",
+      "args": [
+        "serve"
+      ],
+      "env": {
+        "KB_MCP_HOME": "<DATA_ROOT>"
+      }
+    }
+  }
+}
