@@ -20,6 +20,7 @@ import { runCliCommand, type CliDeps, type TokenSource } from "./cli/flow";
 import type { CliEnv } from "./cli/quote";
 import type { CliUi } from "./cli/registry";
 import { createTerminalSender, type TerminalSender } from "./cli/terminal";
+import { SearchHistoryStore } from "./history";
 import { AdminLauncherViewProvider } from "./launcher";
 import { getLogChannel, logLine } from "./log";
 import {
@@ -50,6 +51,7 @@ import type { VaultListState } from "./vaults/vaults";
 let manager: ServerManager | undefined;
 let statusBar: StatusBar | undefined;
 let panel: AdminPanel | undefined;
+let launcherView: AdminLauncherViewProvider | undefined;
 let lastRuntime: RuntimeResolution | null = null;
 let cliSender: TerminalSender | undefined;
 
@@ -105,6 +107,7 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
       dataRoot: readConfig().dataRoot,
     });
     panel?.update({ status, dataRoot: readConfig().dataRoot, runtime: lastRuntime });
+    launcherView?.updateStatus(status);
     logLine(
       `status: ${status.state}${status.port !== null ? ` port=${status.port}` : ""}` +
         (status.message ? ` (${status.message})` : "")
@@ -113,7 +116,7 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
   context.subscriptions.push({ dispose: () => manager?.dispose() });
   statusBar.update(manager.getStatus(), { dataRoot: readConfig().dataRoot });
 
-  const mcpRegistered = registerMcpProvider(context.extensionUri.fsPath, context.subscriptions);
+  const mcpProvider = registerMcpProvider(context.extensionUri.fsPath, context.subscriptions);
 
   const runFlow = <U, D>(
     makeUi: () => U,
@@ -215,7 +218,7 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
       const lines = [
         `provider id: ${MCP_PROVIDER_ID}`,
         `label: ${MCP_PROVIDER_LABEL}`,
-        `registered: ${mcpRegistered ? "yes" : "no (API unavailable in this VS Code host)"}`,
+        `registered: ${mcpProvider.registered ? "yes" : "no (API unavailable in this VS Code host)"}`,
         `data root: ${cfg.dataRoot || "(runtime default)"}`,
         `project vault: ${cfg.projectVault || "(none)"}`,
       ];
@@ -232,7 +235,7 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
       for (const line of lines) channel.appendLine(line);
       channel.show();
       void vscode.window.showInformationMessage(
-        `${PANEL_PREFIX} MCP provider ${mcpRegistered ? "registered" : "unavailable"} — see output`
+        `${PANEL_PREFIX} MCP provider ${mcpProvider.registered ? "registered" : "unavailable"} — see output`
       );
     }),
     vscode.commands.registerCommand(
@@ -272,15 +275,16 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
     vscode.window.onDidCloseTerminal((terminal) => cliSender?.reset(terminal))
   );
 
-  // Sidebar panel: vault search plus quick actions. It starts the admin server on demand.
+  // Sidebar panel: vault search plus grouped actions. It starts the admin server on demand.
+  launcherView = new AdminLauncherViewProvider({
+    extensionId: context.extension.id,
+    ensureRunning: () => manager!.ensureRunning(),
+    getStatus: () => manager!.getStatus(),
+    history: new SearchHistoryStore(context.globalState),
+    mcp: mcpProvider,
+  });
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(
-      LAUNCHER_VIEW_ID,
-      new AdminLauncherViewProvider(context.extensionUri, {
-        extensionId: context.extension.id,
-        ensureRunning: () => manager!.ensureRunning(),
-      })
-    )
+    vscode.window.registerWebviewViewProvider(LAUNCHER_VIEW_ID, launcherView)
   );
 
   return {

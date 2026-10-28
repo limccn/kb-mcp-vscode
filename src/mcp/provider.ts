@@ -34,6 +34,14 @@ export async function provideMcpServerDefinitions(
   }
 }
 
+export interface McpProviderHandle {
+  /** The VS Code host exposes the MCP definition provider API. */
+  available: boolean;
+  registered: boolean;
+  /** Ask VS Code to re-read definitions; false when the API is unavailable. */
+  reload: () => boolean;
+}
+
 /**
  * Registers the MCP definition provider. Guarded so an older VS Code host without
  * the API degrades to "no provider" instead of failing activation.
@@ -41,17 +49,27 @@ export async function provideMcpServerDefinitions(
 export function registerMcpProvider(
   extensionPath: string,
   subscriptions: vscode.Disposable[]
-): boolean {
+): McpProviderHandle {
   const lm = vscode.lm as typeof vscode.lm | undefined;
   if (!lm || typeof lm.registerMcpServerDefinitionProvider !== "function") {
     logLine("MCP provider API is not available in this VS Code host; skipping registration");
-    return false;
+    return { available: false, registered: false, reload: () => false };
   }
+  const emitter = new vscode.EventEmitter<void>();
+  subscriptions.push(emitter);
   subscriptions.push(
     lm.registerMcpServerDefinitionProvider(MCP_PROVIDER_ID, {
       provideMcpServerDefinitions: () => provideMcpServerDefinitions(extensionPath),
+      onDidChangeMcpServerDefinitions: emitter.event,
     })
   );
   logLine(`MCP provider registered: ${MCP_PROVIDER_ID} (${MCP_PROVIDER_LABEL})`);
-  return true;
+  return {
+    available: true,
+    registered: true,
+    reload: () => {
+      emitter.fire();
+      return true;
+    },
+  };
 }

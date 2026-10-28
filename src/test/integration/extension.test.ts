@@ -8,6 +8,15 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import type { CliDeps } from "../../cli/flow";
 import type { CliUi } from "../../cli/registry";
+import {
+  createIngestBatch,
+  fetchIngestLimits,
+  listIngestJobs,
+  planFileSelection,
+  postIngestFile,
+  startIngestBatch,
+  type IngestJobSummary,
+} from "../../ingest";
 import type { SkillsDeps, SkillsUi } from "../../mcp/flow";
 import type { VaultScope, VaultsDeps, VaultsUi } from "../../vaults/flow";
 import type { VaultListState } from "../../vaults/vaults";
@@ -426,6 +435,50 @@ async function body(): Promise<void> {
       "admin console after second start"
     );
     console.log("[it] second start answered");
+
+    console.log("[it] ingest upload leg");
+    const uploadDir = path.join(sandbox, "upload-in");
+    fs.mkdirSync(uploadDir, { recursive: true });
+    const uploadFile = path.join(uploadDir, "integration-note.md");
+    fs.writeFileSync(uploadFile, "# Integration note\n\nhyseed upload leg.\n");
+    const ingestLimits = await withTimeout(fetchIngestLimits(port), 10_000, "ingest limits");
+    const ingestPlan = await withTimeout(
+      planFileSelection([uploadFile], ingestLimits),
+      10_000,
+      "plan file upload"
+    );
+    assert.equal(ingestPlan.files.length, 1, "upload plan should hold one file");
+    const ingestBatch = await withTimeout(
+      createIngestBatch(port, "default"),
+      10_000,
+      "create ingest batch"
+    );
+    const staged = await withTimeout(
+      postIngestFile(port, ingestBatch.batch_id, ingestPlan.files[0], "upload"),
+      30_000,
+      "upload ingest file"
+    );
+    assert.equal(staged.ok, true, "server rejected the markdown upload");
+    const ingestStart = await withTimeout(
+      startIngestBatch(port, ingestBatch.batch_id),
+      10_000,
+      "start ingest batch"
+    );
+    let ingestJob: IngestJobSummary | undefined;
+    await waitFor(
+      async () => {
+        const jobs = await listIngestJobs(port);
+        ingestJob = jobs.find((candidate) => candidate.job_id === ingestStart.job_id);
+        return ingestJob !== undefined && (ingestJob.state === "done" || ingestJob.state === "failed");
+      },
+      30_000,
+      "ingest job terminal state"
+    );
+    assert.ok(ingestJob, "ingest job was not listed by /api/ingest/jobs");
+    assert.equal(ingestJob!.state, "done", `ingest job failed: ${ingestJob!.error ?? ""}`);
+    assert.equal(ingestJob!.counts.uploaded, 1);
+    assert.equal(ingestJob!.counts.converted + ingestJob!.counts.skipped, 1);
+    console.log("[it] ingest upload reached done with uploaded=1");
 
     console.log("[it] vault flows");
     const vaultWorkspace = path.join(sandbox, "vault-workspace");

@@ -3,13 +3,17 @@
 把 **hyseed**（原 kb-mcp）本地知识库带进 VS Code：管理台 Webview 标签页、MCP / 技能配置、
 知识库（vault）管理，以及命令面板里的常用 CLI 指令。
 
-> 状态：早期开发（0.1.0），目前仅支持 Windows x64。
+> 状态：早期开发（0.1.1），目前仅支持 Windows x64。
 
 ## 功能
 
 - **管理台标签页** —— 在 VS Code 内打开 hyseed 管理界面，由扩展自有的服务进程支撑。
-- **活动栏面板** —— 在活动栏中直接搜索所选 vault（查询、模式、数量、类型、标签），并提供快捷操作：
-  在 VS Code 内置浏览器中打开管理台、创建 vault、安装 MCP/技能、运行 doctor、打开扩展设置。
+- **活动栏面板** —— 紧凑搜索：知识库独占一行，模式与结果条数是单行分段控件
+  （hybrid/lexical/fuzzy/semantic/rrf；10/25/50，窄于 298px 时隐藏数量段），
+  漏斗图标切换筛选并带计数角标。
+  查询框带按 vault 隔离的搜索历史（方向键、Enter、单条删除、二次确认清空）。顶部图标工具条含
+  创建、设置、刷新、`⋯` 操作菜单（管理服务、MCP 状态/重载、文件与文件夹上传及转换进度、
+  跳转 `/git`、维护）和管理台按钮；安装/移除技能仍在命令面板。
 - **服务生命周期** —— 启动、停止、重启、在浏览器打开；端口被占用时自动顺延，已有实例会被复用。
 - **MCP 服务定义** —— 为 VS Code 的 MCP 支持注册 `hyseed`（`hyseed serve`），并遵循工作区 vault pin。
 - **Agent 技能** —— 通过 `hyseed skills` CLI 引导安装 / 移除 / 查看 Claude Code、Codex、Cline
@@ -26,7 +30,7 @@
 ## 安装
 
 ```bash
-code --install-extension kbmcp-vscode-win32-x64-0.1.0.vsix
+code --install-extension kbmcp-vscode-win32-x64-0.1.1.vsix
 ```
 
 内网分发直接共享同一个 VSIX 即可，不依赖市场。安装后重载窗口；命令位于 `hyseed:` 前缀下。

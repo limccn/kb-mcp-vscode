@@ -4,14 +4,19 @@ Bring the **hyseed** (formerly kb-mcp) local knowledge base into VS Code: the ad
 Webview tab, MCP/skills setup, vault management, and the most-used CLI commands in the Command
 Palette.
 
-> Status: early development (0.1.0). Windows x64 only for now.
+> Status: early development (0.1.1). Windows x64 only for now.
 
 ## Features
 
 - **Admin console tab** — the hyseed admin UI inside VS Code, backed by an extension-owned server.
-- **Activity bar panel** — search the selected vault (query, mode, limit, type, tags) from the
-  Activity Bar, and run quick actions: open the admin console in VS Code's built-in browser,
-  create a vault, install MCP/skills, run doctor, or open extension settings.
+- **Activity bar panel** — a compact search surface: the vault gets its own row, mode and result
+  count are one-line segmented controls (hybrid/lexical/fuzzy/semantic/rrf; 10/25/50, count
+  hidden below 298 px), and a funnel
+  icon toggles the filters with a count badge. The query box offers per-vault search
+  history (arrow keys, Enter, per-item delete, two-step clear). The icon top bar holds create,
+  settings, refresh, the `⋯` action menu (admin service, MCP status/reload, file and folder upload
+  with conversion progress, a `/git` jump, maintenance), and the admin console button.
+  Install/Remove skills stay in the Command Palette.
 - **Server lifecycle** — start, stop, restart, open in browser; the state machine survives port
   conflicts and reuses an already-running console.
 - **MCP server definition** — registers `hyseed` (`hyseed serve`) for VS Code's MCP support,
@@ -30,7 +35,7 @@ Palette.
 ## Install
 
 ```bash
-code --install-extension kbmcp-vscode-win32-x64-0.1.0.vsix
+code --install-extension kbmcp-vscode-win32-x64-0.1.1.vsix
 ```
 
 For intranet distribution, share the same VSIX file; the Marketplace is not required. Reload the

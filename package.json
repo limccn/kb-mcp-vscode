@@ -2,7 +2,7 @@
   "name": "kbmcp-vscode",
   "displayName": "hyseed",
   "description": "hyseed (formerly kb-mcp) local knowledge base inside VS Code: admin console, MCP/skills setup, vaults, and CLI commands.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "limccn",
   "license": "MIT",
   "repository": {

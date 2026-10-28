@@ -98,7 +98,7 @@ export function httpJson<T>(port: number, path: string, options: HttpJsonOptions
         res.on("end", () => {
           const status = res.statusCode ?? 0;
           if (status < 200 || status >= 300) {
-            reject(new Error(errorMessage(status, data)));
+            reject(new Error(httpErrorMessage(status, data)));
             return;
           }
           try {
@@ -118,7 +118,8 @@ export function httpJson<T>(port: number, path: string, options: HttpJsonOptions
   });
 }
 
-function errorMessage(status: number, body: string): string {
+/** Render an admin HTTP error body as a single human-readable line. */
+export function httpErrorMessage(status: number, body: string): string {
   const text = body.trim();
   if (!text) return `HTTP ${status}`;
   try {

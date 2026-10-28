@@ -34,7 +34,7 @@ run `vsce publish` / `ovsx publish` anywhere; publishing is a manual, user-appro
 
 ## 3. Distribution channels
 
-Both channels reuse the same `kbmcp-vscode-win32-x64-0.1.0.vsix` — the `win32-x64` target is baked
+Both channels reuse the same `kbmcp-vscode-win32-x64-0.1.1.vsix` — the `win32-x64` target is baked
 in at packaging time, so do not repackage per channel. Keep PATs in environment variables
 (`VSCE_PAT`, `OVSX_PAT`); never write a token into this repository, a script, or a command line that
 gets committed. Both CLIs read those variables by default, so no `--pat` argument is needed.
@@ -42,7 +42,7 @@ gets committed. Both CLIs read those variables by default, so no `--pat` argumen
 **VS Code Marketplace** (publisher id `limccn`):
 
 ```bat
-npx vsce publish -i kbmcp-vscode-win32-x64-0.1.0.vsix
+npx vsce publish -i kbmcp-vscode-win32-x64-0.1.1.vsix
 ```
 
 **Open VSX** (namespace `limccn`; create it once, then verify the PAT):
@@ -50,7 +50,7 @@ npx vsce publish -i kbmcp-vscode-win32-x64-0.1.0.vsix
 ```bat
 npx ovsx create-namespace limccn
 npx ovsx verify-pat limccn
-npx ovsx publish kbmcp-vscode-win32-x64-0.1.0.vsix
+npx ovsx publish kbmcp-vscode-win32-x64-0.1.1.vsix
 ```
 
 After the first publish, users install with `code --install-extension limccn.kbmcp-vscode`

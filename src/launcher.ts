@@ -1,77 +1,96 @@
 import { randomUUID } from "node:crypto";
 import * as vscode from "vscode";
 import { COMMANDS } from "./constants";
+import { SearchHistoryStore } from "./history";
+import {
+  IngestHttpError,
+  createIngestBatch,
+  fetchIngestLimits,
+  listIngestJobs,
+  planFileSelection,
+  planFolderUpload,
+  postIngestFile,
+  startIngestBatch,
+  type IngestJobSummary,
+} from "./ingest";
 import { logLine } from "./log";
+import type { McpProviderHandle } from "./mcp/provider";
 import { fetchVaults, runSearch, switchVault, type SearchParams } from "./search";
 import type { ServerStatus } from "./server";
 
 export interface LauncherHtmlOptions {
-  iconUri: vscode.Uri;
   nonce: string;
 }
 
+function isRunningStatus(status: ServerStatus): boolean {
+  return status.state === "running-own" || status.state === "running-external";
+}
+
 /**
- * Sidebar panel: search + quick actions. The admin console and result documents
- * open in VS Code's built-in Simple Browser, never in the extension's own panel.
+ * Sidebar panel: compact search plus a grouped action menu. The admin console and
+ * result documents open in VS Code's built-in Simple Browser, never in the panel itself.
  */
-export function renderLauncherHtml(
-  webview: vscode.Webview,
-  options: LauncherHtmlOptions
-): string {
+export function renderLauncherHtml(options: LauncherHtmlOptions): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src 'unsafe-inline'; script-src 'nonce-${options.nonce}';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${options.nonce}';">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
+  [hidden] { display: none !important; }
+  :root { --fs-xs: 10px; --fs-sm: 11px; --fs-md: 12px; --fs-lg: 13px; }
   body {
-    padding: 12px;
     color: var(--vscode-foreground);
     font-family: var(--vscode-font-family);
     font-size: var(--vscode-font-size, 13px);
-    line-height: 1.45;
+    line-height: 1.4;
   }
-  header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-  header img { width: 32px; height: 32px; border-radius: 8px; display: block; }
-  h1 { margin: 0; font-size: 14px; line-height: 1.2; font-weight: 600; }
-  header p { margin: 2px 0 0; color: var(--vscode-descriptionForeground); font-size: 11px; }
 
-  .primary {
-    display: block; width: 100%; padding: 7px 10px; border: 0; border-radius: 2px;
-    background: var(--vscode-button-background); color: var(--vscode-button-foreground);
-    font: inherit; cursor: pointer; text-align: center;
+  #topbar {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: 4px;
+    padding: 4px 6px;
+    background: var(--vscode-sideBar-background);
+    border-bottom: 1px solid var(--vscode-panel-border);
   }
-  .primary:hover { background: var(--vscode-button-hoverBackground); }
+  #status-chip {
+    display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0;
+    color: var(--vscode-descriptionForeground); font-size: var(--fs-sm);
+  }
+  #status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #status-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex: none;
+    background: var(--vscode-descriptionForeground);
+  }
+  #status-dot.running-own, #status-dot.running-external {
+    background: var(--vscode-testing-iconPassed, #89d185);
+  }
+  #status-dot.starting, #status-dot.stopping { background: var(--vscode-charts-yellow, #cca700); }
+  #status-dot.error { background: var(--vscode-errorForeground, #f48771); }
 
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0 14px; }
-  .secondary {
-    display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px;
-    padding: 5px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 2px;
-    background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
-    color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
-    font: inherit; cursor: pointer; text-align: left; text-decoration: none;
+  .actions { display: flex; align-items: center; gap: 2px; }
+  .icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; padding: 0;
+    border: 0; border-radius: 3px;
+    background: transparent; color: var(--vscode-foreground);
+    cursor: pointer; text-decoration: none; opacity: .85;
   }
-  .secondary:hover {
-    background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
-  }
-  .secondary svg { width: 14px; height: 14px; flex: none; opacity: .9; }
-  .secondary span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .icon:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, .2)); opacity: 1; }
+  .icon svg { width: 14px; height: 14px; }
+  #btn-admin { background: var(--vscode-button-background); color: var(--vscode-button-foreground); opacity: 1; }
+  #btn-admin:hover { background: var(--vscode-button-hoverBackground); }
 
-  .section-title {
-    display: flex; align-items: center; gap: 8px; margin: 0 0 8px;
-    color: var(--vscode-descriptionForeground); font-size: 10.5px; letter-spacing: .08em;
-    text-transform: uppercase;
-  }
-  .section-title::after { content: ""; flex: 1; height: 1px; background: var(--vscode-panel-border); }
+  #vault-row { padding: 6px 8px 0; }
 
-  .field { display: block; margin-bottom: 8px; }
-  .field > span { display: block; margin-bottom: 3px; color: var(--vscode-descriptionForeground); font-size: 11px; }
   input, select {
-    width: 100%; height: 26px; padding: 3px 6px; border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
-    border-radius: 2px; background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+    width: 100%; padding: 2px 6px;
+    border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+    border-radius: 2px;
+    background: var(--vscode-input-background); color: var(--vscode-input-foreground);
     font: inherit; outline: none;
   }
   select {
@@ -80,163 +99,394 @@ export function renderLauncherHtml(
   }
   input::placeholder { color: var(--vscode-input-placeholderForeground); }
   input:focus, select:focus { border-color: var(--vscode-focusBorder); }
-  .row { display: grid; grid-template-columns: 1fr 84px; gap: 8px; }
+  #vault { height: 28px; font-size: var(--fs-lg); }
 
-  details { margin: 1px 0 8px; }
-  summary { cursor: pointer; color: var(--vscode-textLink-foreground); font-size: 11px; list-style: none; user-select: none; }
-  summary::-webkit-details-marker { display: none; }
-  summary::before { content: "▾ "; }
-  details:not([open]) summary::before { content: "▸ "; }
-  .details-body { padding-top: 8px; }
-
-  .search-btn {
-    display: flex; align-items: center; justify-content: center; gap: 6px;
-    width: 100%; padding: 6px; border: 0; border-radius: 2px;
+  #search-form { padding: 6px 8px 0; }
+  #query-row { position: relative; display: grid; grid-template-columns: 1fr 28px; gap: 4px; }
+  #query { height: 26px; }
+  #search {
+    display: flex; align-items: center; justify-content: center;
+    height: 26px; padding: 0; border: 0; border-radius: 2px;
     background: var(--vscode-button-background); color: var(--vscode-button-foreground);
-    font: inherit; cursor: pointer;
+    cursor: pointer;
   }
-  .search-btn:hover { background: var(--vscode-button-hoverBackground); }
-  .search-btn:disabled { opacity: .6; cursor: default; }
-  .search-btn svg { width: 13px; height: 13px; }
+  #search:hover { background: var(--vscode-button-hoverBackground); }
+  #search:disabled { opacity: .6; cursor: default; }
+  #search svg { width: 13px; height: 13px; }
 
-  .status { min-height: 16px; margin: 8px 0 6px; color: var(--vscode-descriptionForeground); font-size: 11px; }
+  #options-row { display: flex; align-items: center; gap: 3px; margin-top: 6px; }
+  .segmented {
+    display: inline-flex; flex: none; overflow: hidden;
+    border: 1px solid var(--vscode-panel-border); border-radius: 3px;
+  }
+  .seg {
+    height: 26px; padding: 0 3px; border: 0; background: transparent;
+    color: var(--vscode-foreground); font: inherit; font-size: var(--fs-md); cursor: pointer;
+  }
+  .seg + .seg { border-left: 1px solid var(--vscode-panel-border); }
+  .seg[aria-checked="true"] { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+  .seg:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  #options-row .spacer { flex: 1; }
+  #mode + #limit { margin-left: 2px; }
+  @media (max-width: 297px) { #limit { display: none; } }
+  #btn-filters { position: relative; flex: none; }
+  #btn-filters[aria-expanded="true"] { background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, .2)); opacity: 1; }
+  #btn-filters svg { width: 15px; height: 15px; }
+
+  #filters { display: grid; gap: 4px; margin: 5px 0 0; }
+  .count {
+    padding: 0 5px; border-radius: 8px;
+    background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
+    font-size: var(--fs-xs); line-height: 14px;
+  }
+  #btn-filters .count { position: absolute; top: -3px; right: -3px; min-width: 14px; text-align: center; }
+  #type, #tags { height: 26px; font-size: var(--fs-md); }
+  .link {
+    justify-self: start; padding: 0; border: 0; background: none;
+    color: var(--vscode-textLink-foreground); font-size: var(--fs-sm); cursor: pointer;
+  }
+  .link:hover { text-decoration: underline; }
+
+  .history {
+    position: absolute; top: 28px; left: 0; right: 32px; z-index: 30;
+    max-height: 220px; overflow-y: auto;
+    border: 1px solid var(--vscode-panel-border); border-radius: 2px;
+    background: var(--vscode-dropdown-background, var(--vscode-sideBar-background));
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
+  }
+  .history-row { display: flex; align-items: center; }
+  .history-row.active .history-item, .history-item:hover {
+    background: var(--vscode-list-hoverBackground);
+  }
+  .history-item {
+    flex: 1; min-width: 0; padding: 4px 6px;
+    border: 0; background: none; color: var(--vscode-foreground);
+    font: inherit; font-size: var(--fs-md); text-align: left; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .history-remove {
+    flex: none; width: 20px; height: 20px; padding: 0;
+    border: 0; background: none; color: var(--vscode-descriptionForeground);
+    font-size: var(--fs-sm); cursor: pointer;
+  }
+  .history-remove:hover { color: var(--vscode-foreground); }
+  .history-clear {
+    display: block; width: 100%; padding: 3px 6px;
+    border: 0; border-top: 1px solid var(--vscode-panel-border); background: none;
+    color: var(--vscode-descriptionForeground); font-size: var(--fs-sm);
+    text-align: left; cursor: pointer;
+  }
+  .history-clear:hover { color: var(--vscode-foreground); }
+  .history-clear.confirm { color: var(--vscode-errorForeground, #f48771); }
+
+  .status { min-height: 13px; padding: 5px 8px 0; color: var(--vscode-descriptionForeground); font-size: var(--fs-sm); }
   .status.ok { color: var(--vscode-testing-iconPassed, #89d185); }
   .status.err { color: var(--vscode-errorForeground, #f48771); }
 
-  .results { display: flex; flex-direction: column; gap: 6px; }
+  .ingest {
+    display: flex; align-items: center; gap: 6px;
+    margin: 4px 8px 0; padding: 3px 6px; border-radius: 2px;
+    background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+    color: var(--vscode-descriptionForeground); font-size: var(--fs-sm);
+  }
+  .ingest.err { color: var(--vscode-errorForeground, #f48771); }
+  .ingest.ok { color: var(--vscode-testing-iconPassed, #89d185); }
+  #ingest-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spinner {
+    width: 10px; height: 10px; flex: none; border-radius: 50%;
+    border: 1.5px solid currentColor; border-right-color: transparent;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .results { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px 12px; }
   .hit {
-    display: block; width: 100%; padding: 8px; text-align: left; font: inherit;
+    display: block; width: 100%; padding: 6px 7px; text-align: left; font: inherit;
     white-space: normal;
     border: 1px solid var(--vscode-panel-border); border-radius: 3px;
     background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
     color: var(--vscode-foreground); cursor: pointer;
   }
   .hit:hover { background: var(--vscode-list-hoverBackground); }
-  .hit-head { display: flex; align-items: baseline; gap: 8px; }
+  .hit-head { display: flex; align-items: baseline; gap: 6px; }
   .hit-title {
-    flex: 1; min-width: 0; font-weight: 600; white-space: nowrap;
-    overflow: hidden; text-overflow: ellipsis;
+    flex: 1; min-width: 0; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .score {
-    flex: none; padding: 1px 6px; border-radius: 9px;
-    background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 10px;
+    flex: none; padding: 0 5px; border-radius: 9px;
+    background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: var(--fs-xs);
   }
   .hit-meta {
-    display: block; margin-top: 2px; color: var(--vscode-descriptionForeground);
-    font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: block; margin-top: 1px; color: var(--vscode-descriptionForeground);
+    font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .hit-snippet { display: block; margin-top: 5px; font-size: 11px; line-height: 1.4; }
-
+  .hit-snippet {
+    display: -webkit-box; margin-top: 3px; overflow: hidden;
+    font-size: var(--fs-sm); line-height: 1.35;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
   .empty {
-    padding: 14px 8px; text-align: center; color: var(--vscode-descriptionForeground);
+    padding: 12px 8px; text-align: center; color: var(--vscode-descriptionForeground);
     border: 1px dashed var(--vscode-panel-border); border-radius: 3px;
   }
-  .hint { margin: 10px 0 0; color: var(--vscode-descriptionForeground); font-size: 10.5px; }
+
+  #backdrop { position: fixed; inset: 0; z-index: 40; }
+  #menu {
+    position: fixed; top: 32px; right: 6px; z-index: 50;
+    width: min(260px, calc(100vw - 16px)); max-height: calc(100vh - 40px); overflow-y: auto;
+    padding: 4px 0; border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+    border-radius: 4px;
+    background: var(--vscode-menu-background, var(--vscode-dropdown-background));
+    color: var(--vscode-menu-foreground, var(--vscode-foreground));
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+  }
+  .menu-title {
+    padding: 5px 10px 2px; font-size: var(--fs-xs); letter-spacing: .06em;
+    text-transform: uppercase; color: var(--vscode-descriptionForeground);
+  }
+  .menu-item {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    padding: 5px 10px; border: 0; background: none;
+    color: inherit; font: inherit; font-size: var(--fs-md); text-align: left;
+    text-decoration: none; cursor: pointer;
+  }
+  .menu-item:hover {
+    background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+    color: var(--vscode-menu-selectionForeground, inherit);
+  }
+  .menu-item[aria-disabled="true"] { opacity: .5; cursor: default; }
+  .menu-badge {
+    margin-left: auto; padding: 0 5px; border-radius: 8px;
+    background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
+    font-size: var(--fs-xs); text-transform: none; letter-spacing: 0;
+  }
+  .menu-badge.ok { background: var(--vscode-testing-iconPassed, #89d185); color: #000; }
+  .menu-badge.warn { background: var(--vscode-charts-yellow, #cca700); color: #000; }
+
+  #jobs {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+    display: flex; flex-direction: column; max-height: 60vh;
+    border-top: 1px solid var(--vscode-panel-border);
+    background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+    box-shadow: 0 -4px 14px rgba(0, 0, 0, .3);
+  }
+  .sheet-head {
+    display: flex; align-items: center; gap: 4px;
+    padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border);
+  }
+  .sheet-head strong { flex: 1; font-size: var(--fs-md); font-weight: 600; }
+  .mini {
+    padding: 2px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 2px;
+    background: var(--vscode-button-secondaryBackground, transparent); color: inherit;
+    font: inherit; font-size: var(--fs-sm); cursor: pointer;
+  }
+  .mini:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground)); }
+  .jobs-list { flex: 1; overflow-y: auto; }
+  .job { padding: 5px 10px; border-bottom: 1px solid var(--vscode-panel-border); font-size: var(--fs-sm); }
+  .job-head { display: flex; align-items: center; gap: 6px; }
+  .job-id { font-family: var(--vscode-editor-font-family, monospace); font-size: var(--fs-sm); }
+  .job-state {
+    margin-left: auto; padding: 0 5px; border-radius: 8px;
+    background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: var(--fs-xs);
+  }
+  .job-state.done { background: var(--vscode-testing-iconPassed, #89d185); color: #000; }
+  .job-state.failed { background: var(--vscode-errorForeground, #f48771); color: #fff; }
+  .job-counts { margin-top: 2px; color: var(--vscode-descriptionForeground); font-size: var(--fs-sm); }
+  .job-error { margin-top: 2px; color: var(--vscode-errorForeground, #f48771); }
+  .jobs-empty { padding: 14px 8px; text-align: center; color: var(--vscode-descriptionForeground); font-size: var(--fs-sm); }
+  .sheet-foot { display: flex; gap: 6px; padding: 4px 8px; border-top: 1px solid var(--vscode-panel-border); }
+  .sheet-foot .mini { flex: 1; }
+  .jobs-note { margin: 0; padding: 2px 8px 5px; color: var(--vscode-descriptionForeground); font-size: var(--fs-xs); }
+  .jobs-note.err { color: var(--vscode-errorForeground, #f48771); }
 </style>
 </head>
 <body>
-<header>
-  <img src="${options.iconUri.toString()}" alt="hyseed">
-  <div>
-    <h1>hyseed</h1>
-    <p>Local knowledge base</p>
+<div id="topbar">
+  <span id="status-chip" title="Admin server status">
+    <span id="status-dot"></span>
+    <span id="status-text">starting</span>
+  </span>
+  <div class="actions">
+    <a id="btn-create" class="icon" href="command:${COMMANDS.createVault}" title="Create knowledge base" aria-label="Create knowledge base"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></a>
+    <button id="btn-settings" class="icon" type="button" title="Settings" aria-label="Settings"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M3 5h10M3 11h10M6 3v4M10 9v4"/></svg></button>
+    <button id="btn-refresh" class="icon" type="button" title="Refresh knowledge bases and status" aria-label="Refresh"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.5"/><path d="M13 2.5v3h-3"/></svg></button>
+    <button id="btn-menu" class="icon" type="button" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false" aria-controls="menu"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="13" cy="8" r="1.1"/></svg></button>
+    <button id="btn-admin" class="icon" type="button" title="Open admin console in VS Code" aria-label="Open admin console"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 6h12M6 6v7.5"/></svg></button>
   </div>
-</header>
+</div>
 
-<button id="open-admin" class="primary" type="button" title="Open the admin console in VS Code's built-in browser">Open admin console</button>
-
-<div class="grid">
-  <a class="secondary" href="command:${COMMANDS.createVault}" title="Create vault">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
-    <span>Create</span>
-  </a>
-  <a class="secondary" href="command:${COMMANDS.installAgentSkills}" title="Install MCP definitions and agent skills">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8m0 0 3-3m-3 3L5 7M3 13h10"/></svg>
-    <span>Install MCP/skills</span>
-  </a>
-  <a class="secondary" href="command:${COMMANDS.cliDoctor}" title="Run the hyseed doctor">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 8h3l1.5-3 2.5 6 1.5-3h4.5"/></svg>
-    <span>Doctor</span>
-  </a>
-  <button id="open-settings" class="secondary" type="button" title="Open hyseed extension settings">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M3 5h10M3 11h10M6 3v4M10 9v4"/></svg>
-    <span>Settings</span>
-  </button>
+<div id="vault-row">
+  <select id="vault" aria-label="Knowledge base" title="Current knowledge base"><option value="">Loading knowledge bases…</option></select>
 </div>
 
 <form id="search-form">
-  <div class="section-title">Search</div>
-
-  <label class="field">
-    <span>Knowledge base</span>
-    <select id="vault"><option value="">Loading knowledge bases…</option></select>
-  </label>
-
-  <label class="field">
-    <span>Query</span>
-    <input id="query" type="text" placeholder="Search the knowledge base…" autocomplete="off" spellcheck="false">
-  </label>
-
-  <div class="row">
-    <label class="field">
-      <span>Mode</span>
-      <select id="mode">
-        <option value="hybrid">hybrid</option>
-        <option value="lexical">lexical</option>
-        <option value="fuzzy">fuzzy</option>
-        <option value="semantic">semantic</option>
-        <option value="rrf">rrf</option>
-      </select>
-    </label>
-    <label class="field">
-      <span>Limit</span>
-      <input id="limit" type="number" min="1" max="100" step="1" value="10">
-    </label>
+  <div id="query-row">
+    <input id="query" type="text" placeholder="Search the knowledge base…" aria-label="Search query" autocomplete="off" spellcheck="false">
+    <button id="search" type="submit" title="Search" aria-label="Search"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.2 10.2 3.3 3.3"/></svg></button>
+    <div id="history" class="history" role="listbox" aria-label="Search history" hidden></div>
   </div>
-
-  <details open>
-    <summary>Filters</summary>
-    <div class="details-body">
-      <label class="field">
-        <span>Type</span>
-        <input id="type" type="text" placeholder="any type" autocomplete="off" spellcheck="false">
-      </label>
-      <label class="field">
-        <span>Tags</span>
-        <input id="tags" type="text" placeholder="comma,separated" autocomplete="off" spellcheck="false">
-      </label>
+  <div id="options-row">
+    <div id="mode" class="segmented" role="radiogroup" aria-label="Search mode">
+      <button type="button" class="seg" role="radio" data-value="hybrid" aria-checked="true">hybrid</button>
+      <button type="button" class="seg" role="radio" data-value="lexical" aria-checked="false">lexical</button>
+      <button type="button" class="seg" role="radio" data-value="fuzzy" aria-checked="false">fuzzy</button>
+      <button type="button" class="seg" role="radio" data-value="semantic" aria-checked="false">semantic</button>
+      <button type="button" class="seg" role="radio" data-value="rrf" aria-checked="false">rrf</button>
     </div>
-  </details>
-
-  <button id="search" class="search-btn" type="submit">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.2 10.2 3.3 3.3"/></svg>
-    Search
-  </button>
+    <div id="limit" class="segmented" role="radiogroup" aria-label="Result limit">
+      <button type="button" class="seg" role="radio" data-value="10" aria-checked="true" aria-label="10 results" title="10 results">10</button>
+      <button type="button" class="seg" role="radio" data-value="25" aria-checked="false" aria-label="25 results" title="25 results">25</button>
+      <button type="button" class="seg" role="radio" data-value="50" aria-checked="false" aria-label="50 results" title="50 results">50</button>
+    </div>
+    <span class="spacer"></span>
+    <button id="btn-filters" class="icon" type="button" title="Filters" aria-label="Filters" aria-expanded="false" aria-controls="filters"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5h11l-4 5v4l-3 1v-5z"/></svg><span id="filter-count" class="count" hidden></span></button>
+  </div>
+  <div id="filters" role="group" aria-label="Filters" hidden>
+    <input id="type" type="text" placeholder="type (any)" aria-label="Document type filter" autocomplete="off" spellcheck="false">
+    <input id="tags" type="text" placeholder="tags, comma separated" aria-label="Tag filter" autocomplete="off" spellcheck="false">
+    <button id="filters-clear" class="link" type="button">Clear filters</button>
+  </div>
 </form>
 
 <div id="status" class="status" role="status">Starting the admin server…</div>
+<div id="ingest-status" class="ingest" role="status" aria-live="polite" hidden>
+  <span id="ingest-spinner" class="spinner" hidden></span>
+  <span id="ingest-text"></span>
+</div>
 <div id="results" class="results"></div>
-<p class="hint">Admin console and results open in VS Code's built-in browser. Switching the knowledge base changes the global current vault.</p>
+
+<div id="backdrop" hidden></div>
+<div id="menu" role="menu" aria-label="Actions" hidden>
+  <div class="menu-title">Admin service</div>
+  <a id="menu-start" class="menu-item" data-group="admin" role="menuitem" href="command:${COMMANDS.startServer}">Start service</a>
+  <a id="menu-restart" class="menu-item" data-group="admin" role="menuitem" href="command:${COMMANDS.restartServer}">Restart service</a>
+  <button id="menu-console" class="menu-item" data-group="admin" role="menuitem" type="button">Open console in VS Code</button>
+  <a id="menu-browser" class="menu-item" data-group="admin" role="menuitem" href="command:${COMMANDS.openInBrowser}">Open console in browser</a>
+
+  <div class="menu-title">MCP</div>
+  <a id="menu-mcp-status" class="menu-item" data-group="mcp" role="menuitem" href="command:${COMMANDS.showMcpStatus}">MCP status <span id="mcp-state" class="menu-badge">unknown</span></a>
+  <button id="menu-reload-mcp" class="menu-item" data-group="mcp" role="menuitem" type="button">Reload MCP definitions</button>
+
+  <div class="menu-title">Knowledge base</div>
+  <button id="menu-upload-files" class="menu-item" data-group="ingest" role="menuitem" type="button">Upload files…</button>
+  <button id="menu-upload-folder" class="menu-item" data-group="ingest" role="menuitem" type="button">Upload folder…</button>
+  <button id="menu-progress" class="menu-item" data-group="ingest" role="menuitem" type="button">Conversion progress <span id="menu-jobs-badge" class="menu-badge" hidden>0</span></button>
+
+  <div class="menu-title">Git</div>
+  <button id="menu-git" class="menu-item" data-group="git" role="menuitem" type="button">Open Git page</button>
+
+  <div class="menu-title">Maintenance</div>
+  <a id="menu-install-skills" class="menu-item" data-group="more" role="menuitem" href="command:${COMMANDS.installAgentSkills}">Install MCP &amp; skills</a>
+  <a id="menu-skills-state" class="menu-item" data-group="more" role="menuitem" href="command:${COMMANDS.showSkillsState}">Skills status</a>
+  <a id="menu-doctor" class="menu-item" data-group="more" role="menuitem" href="command:${COMMANDS.cliDoctor}">Run doctor</a>
+  <a id="menu-logs" class="menu-item" data-group="more" role="menuitem" href="command:${COMMANDS.showLogs}">Show logs</a>
+  <a id="menu-runtime" class="menu-item" data-group="more" role="menuitem" href="command:${COMMANDS.showRuntimeInfo}">Runtime info</a>
+</div>
+
+<div id="jobs" role="dialog" aria-modal="true" aria-labelledby="jobs-title" hidden>
+  <div class="sheet-head">
+    <strong id="jobs-title">Ingestion jobs</strong>
+    <button id="jobs-refresh" class="mini" type="button" title="Refresh jobs">Refresh</button>
+    <button id="jobs-close" class="mini" type="button" title="Close" aria-label="Close">&times;</button>
+  </div>
+  <div id="jobs-list" class="jobs-list"></div>
+  <div class="sheet-foot">
+    <button id="jobs-open" class="mini" type="button">Open ingest page</button>
+  </div>
+  <p id="jobs-note" class="jobs-note">Jobs live in the admin process; restarting the server clears them.</p>
+</div>
 
 <script nonce="${options.nonce}">
 (function () {
-  const vscode = acquireVsCodeApi();
-  const $ = function (id) { return document.getElementById(id); };
-  const vaultSelect = $("vault");
-  const queryInput = $("query");
-  const modeSelect = $("mode");
-  const limitInput = $("limit");
-  const typeInput = $("type");
-  const tagsInput = $("tags");
-  const searchButton = $("search");
-  const statusEl = $("status");
-  const resultsEl = $("results");
-  let currentVault = "";
-  let pending = 0;
-  let busy = false;
+  var vscode = acquireVsCodeApi();
+  var $ = function (id) { return document.getElementById(id); };
+  var statusChip = $("status-chip");
+  var statusDot = $("status-dot");
+  var statusText = $("status-text");
+  var vaultSelect = $("vault");
+  var queryInput = $("query");
+  var modeGroup = $("mode");
+  var limitGroup = $("limit");
+  var typeInput = $("type");
+  var tagsInput = $("tags");
+  var filters = $("filters");
+  var filtersToggle = $("btn-filters");
+  var filterCount = $("filter-count");
+  var filtersClear = $("filters-clear");
+  var searchButton = $("search");
+  var statusEl = $("status");
+  var ingestEl = $("ingest-status");
+  var ingestSpinner = $("ingest-spinner");
+  var ingestText = $("ingest-text");
+  var resultsEl = $("results");
+  var historyEl = $("history");
+  var menuButton = $("btn-menu");
+  var menuEl = $("menu");
+  var backdrop = $("backdrop");
+  var menuStart = $("menu-start");
+  var menuRestart = $("menu-restart");
+  var menuReloadMcp = $("menu-reload-mcp");
+  var mcpState = $("mcp-state");
+  var jobsBadge = $("menu-jobs-badge");
+  var jobsPane = $("jobs");
+  var jobsList = $("jobs-list");
+  var jobsNote = $("jobs-note");
+  var jobsNoteDefault = jobsNote.textContent;
+  var currentVault = "";
+  var pending = 0;
+  var busy = false;
+  var booted = false;
+  var historyItems = [];
+  var historyOpen = false;
+  var historyIndex = -1;
+  var clearArmed = false;
+  var clearTimer = 0;
+  var serverRunning = false;
+  var lastJobs = [];
+  var MODES = ["hybrid", "lexical", "fuzzy", "semantic", "rrf"];
+  var LIMITS = [10, 25, 50];
+  var saved = vscode.getState() || {};
+
+  function segmentValue(group) {
+    var active = group.querySelector('[aria-checked="true"]');
+    return active ? active.getAttribute("data-value") : "";
+  }
+
+  function setSegmentValue(group, value) {
+    var options = group.querySelectorAll(".seg");
+    for (var i = 0; i < options.length; i++) {
+      var checked = options[i].getAttribute("data-value") === value;
+      options[i].setAttribute("aria-checked", checked ? "true" : "false");
+      options[i].tabIndex = checked ? 0 : -1;
+    }
+  }
+
+  function setFiltersOpen(open) {
+    filters.hidden = !open;
+    filtersToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  if (typeof saved.query === "string") queryInput.value = saved.query;
+  setSegmentValue(modeGroup, MODES.indexOf(saved.mode) !== -1 ? saved.mode : "hybrid");
+  setSegmentValue(limitGroup, LIMITS.indexOf(saved.limit) !== -1 ? String(saved.limit) : "10");
+  if (typeof saved.type === "string") typeInput.value = saved.type;
+  if (typeof saved.tags === "string") tagsInput.value = saved.tags;
+  setFiltersOpen(saved.filtersOpen === true);
+
+  function persist() {
+    vscode.setState({
+      query: queryInput.value,
+      mode: segmentValue(modeGroup),
+      limit: Number(segmentValue(limitGroup)),
+      type: typeInput.value,
+      tags: tagsInput.value,
+      filtersOpen: !filters.hidden
+    });
+  }
 
   function setStatus(text, kind) {
-    statusEl.textContent = text;
+    statusEl.textContent = text || "";
     statusEl.className = "status" + (kind ? " " + kind : "");
   }
 
@@ -245,88 +495,440 @@ export function renderLauncherHtml(
     searchButton.disabled = value;
   }
 
-  function stripTags(value) {
-    return String(value || "").replace(/<[^>]*>/g, "");
+  function setIngest(text, kind, spin) {
+    if (!text) {
+      ingestEl.hidden = true;
+      ingestText.textContent = "";
+      return;
+    }
+    ingestEl.hidden = false;
+    ingestEl.className = "ingest" + (kind ? " " + kind : "");
+    ingestSpinner.hidden = !spin;
+    ingestText.textContent = text;
+  }
+
+  function updateFilterCount() {
+    var count = 0;
+    if (typeInput.value.trim()) count += 1;
+    if (tagsInput.value.trim()) count += 1;
+    filterCount.hidden = count === 0;
+    filterCount.textContent = String(count);
+    filtersToggle.setAttribute("aria-label", count ? "Filters, " + count + " active" : "Filters");
+  }
+
+  function renderServer(status) {
+    status = status || {};
+    var state = String(status.state || "stopped");
+    serverRunning = state === "running-own" || state === "running-external";
+    var label;
+    if (state === "running-own") label = "running";
+    else if (state === "running-external") label = "127.0.0.1" + (status.port ? ":" + status.port : "");
+    else if (state === "stopped") label = "start";
+    else label = state;
+    statusText.textContent = label;
+    statusDot.className = state;
+    statusChip.title = "Admin server: " + state +
+      (status.port ? " on port " + status.port : "") +
+      (status.message ? " - " + status.message : "");
+    menuStart.hidden = serverRunning;
+    menuRestart.hidden = !serverRunning;
+    if (state === "running-external") {
+      menuRestart.setAttribute("aria-disabled", "true");
+      menuRestart.title = "Restart is available only for the server this extension started";
+    } else {
+      menuRestart.removeAttribute("aria-disabled");
+      menuRestart.removeAttribute("title");
+    }
   }
 
   function renderVaults(data) {
-    const vaults = Array.isArray(data.vaults) ? data.vaults : [];
+    var vaults = Array.isArray(data.vaults) ? data.vaults : [];
     vaultSelect.replaceChildren();
-    for (let i = 0; i < vaults.length; i++) {
-      const vault = vaults[i];
-      const option = document.createElement("option");
+    if (!vaults.length) {
+      var none = document.createElement("option");
+      none.value = "";
+      none.textContent = "No knowledge bases";
+      vaultSelect.appendChild(none);
+      currentVault = "";
+      booted = true;
+      setStatus("No knowledge bases found. Create one to get started.", "err");
+      return;
+    }
+    for (var i = 0; i < vaults.length; i++) {
+      var vault = vaults[i];
+      var option = document.createElement("option");
       option.value = vault.name;
       option.textContent = vault.name;
       if (vault.description) option.title = vault.description;
       vaultSelect.appendChild(option);
     }
-    currentVault = data.current || (vaults.length ? vaults[0].name : "");
-    if (currentVault) {
-      vaultSelect.value = currentVault;
-      setStatus("Current knowledge base: " + currentVault);
-    } else {
-      setStatus("No knowledge bases found. Create one to get started.", "err");
+    currentVault = data.current || vaults[0].name;
+    vaultSelect.value = currentVault;
+    if (!booted) {
+      booted = true;
+      setStatus("");
     }
   }
 
+  function stripTags(value) {
+    return String(value || "").replace(/<[^>]*>/g, "");
+  }
+
   function renderResults(data) {
-    const hits = Array.isArray(data.hits) ? data.hits : [];
+    var hits = Array.isArray(data.hits) ? data.hits : [];
     resultsEl.replaceChildren();
     if (hits.length === 0) {
-      const empty = document.createElement("div");
+      var empty = document.createElement("div");
       empty.className = "empty";
       empty.textContent = "No results. Try fuzzy or hybrid mode, or fewer filters.";
       resultsEl.appendChild(empty);
       setStatus("0 results", "ok");
       return;
     }
-    for (let i = 0; i < hits.length; i++) {
-      const hit = hits[i] || {};
-      const doc = hit.doc || {};
-      const card = document.createElement("button");
+    for (var i = 0; i < hits.length; i++) {
+      var hit = hits[i] || {};
+      var doc = hit.doc || {};
+      var card = document.createElement("button");
       card.type = "button";
       card.className = "hit";
       card.title = "Open " + (doc.title || doc.id) + " in the built-in browser";
 
-      const head = document.createElement("span");
+      var head = document.createElement("span");
       head.className = "hit-head";
-      const title = document.createElement("span");
+      var title = document.createElement("span");
       title.className = "hit-title";
       title.textContent = doc.title || doc.id || "(untitled)";
       head.appendChild(title);
       if (typeof hit.score === "number") {
-        const score = document.createElement("span");
+        var score = document.createElement("span");
         score.className = "score";
         score.textContent = hit.score.toFixed(3);
         head.appendChild(score);
       }
 
-      const meta = document.createElement("span");
+      var meta = document.createElement("span");
       meta.className = "hit-meta";
       meta.textContent = (doc.type || "doc") + " · " + (doc.id || "");
 
-      const snippet = document.createElement("span");
+      var snippet = document.createElement("span");
       snippet.className = "hit-snippet";
       snippet.textContent = stripTags(hit.snippet) || stripTags((doc.body || "").slice(0, 180));
 
       card.appendChild(head);
       card.appendChild(meta);
       card.appendChild(snippet);
-      card.addEventListener("click", function () {
-        vscode.postMessage({ type: "openDocument", id: doc.id });
-      });
+      (function (id) {
+        card.addEventListener("click", function () {
+          vscode.postMessage({ type: "openDocument", id: id });
+        });
+      })(doc.id);
       resultsEl.appendChild(card);
     }
-    const count = typeof data.count === "number" ? data.count : hits.length;
+    var count = typeof data.count === "number" ? data.count : hits.length;
     setStatus(count + (count === 1 ? " result" : " results") + (currentVault ? " · " + currentVault : ""), "ok");
   }
 
-  $("open-admin").addEventListener("click", function () {
+  function renderMcp(message) {
+    var registered = message.registered === true;
+    mcpState.textContent = registered ? "registered" : "unavailable";
+    mcpState.className = "menu-badge " + (registered ? "ok" : "warn");
+    if (registered) {
+      menuReloadMcp.removeAttribute("aria-disabled");
+      menuReloadMcp.removeAttribute("disabled");
+      menuReloadMcp.title = "Ask VS Code to re-read the MCP server definition";
+    } else {
+      menuReloadMcp.setAttribute("aria-disabled", "true");
+      menuReloadMcp.setAttribute("disabled", "disabled");
+      menuReloadMcp.title = "The MCP provider API is unavailable in this VS Code host";
+    }
+    if (message.reloaded === true) setStatus("MCP definitions reloaded.", "ok");
+    if (message.reloaded === false) setStatus("MCP provider is not available in this host.", "err");
+  }
+
+  function filteredHistory() {
+    var needle = queryInput.value.trim().toLowerCase();
+    if (!needle) return historyItems;
+    return historyItems.filter(function (item) {
+      return item.toLowerCase().indexOf(needle) !== -1;
+    });
+  }
+
+  function hideHistory() {
+    historyOpen = false;
+    historyIndex = -1;
+    clearArmed = false;
+    if (clearTimer) {
+      clearTimeout(clearTimer);
+      clearTimer = 0;
+    }
+    historyEl.hidden = true;
+  }
+
+  function renderHistory() {
+    var items = filteredHistory();
+    historyEl.replaceChildren();
+    if (!items.length) {
+      hideHistory();
+      return;
+    }
+    for (var i = 0; i < items.length; i++) {
+      (function (item, index) {
+        var row = document.createElement("div");
+        row.className = "history-row" + (index === historyIndex ? " active" : "");
+        var pick = document.createElement("button");
+        pick.type = "button";
+        pick.className = "history-item";
+        pick.textContent = item;
+        pick.title = "Search for " + item;
+        pick.addEventListener("click", function () { chooseHistory(item); });
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "history-remove";
+        remove.textContent = "×";
+        remove.title = "Remove from history";
+        remove.setAttribute("aria-label", "Remove " + item + " from history");
+        remove.addEventListener("click", function (event) {
+          event.stopPropagation();
+          vscode.postMessage({ type: "forgetQuery", query: item });
+        });
+        row.appendChild(pick);
+        row.appendChild(remove);
+        historyEl.appendChild(row);
+      })(items[i], i);
+    }
+    var clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "history-clear" + (clearArmed ? " confirm" : "");
+    clear.textContent = clearArmed ? "Click again to clear all history" : "Clear history";
+    clear.addEventListener("click", function () {
+      if (!clearArmed) {
+        clearArmed = true;
+        renderHistory();
+        if (clearTimer) clearTimeout(clearTimer);
+        clearTimer = setTimeout(function () {
+          clearArmed = false;
+          renderHistory();
+        }, 3000);
+        return;
+      }
+      clearArmed = false;
+      if (clearTimer) {
+        clearTimeout(clearTimer);
+        clearTimer = 0;
+      }
+      vscode.postMessage({ type: "clearHistory" });
+    });
+    historyEl.appendChild(clear);
+    historyEl.hidden = false;
+    historyOpen = true;
+  }
+
+  function showHistory() {
+    if (!historyItems.length) return;
+    historyIndex = -1;
+    renderHistory();
+  }
+
+  function chooseHistory(item) {
+    queryInput.value = item;
+    hideHistory();
+    persist();
+    submitSearch();
+  }
+
+  function setHistory(items) {
+    historyItems = Array.isArray(items) ? items.slice(0, 8) : [];
+    if (historyIndex >= historyItems.length) historyIndex = historyItems.length - 1;
+    if (historyOpen) renderHistory();
+    if (!historyItems.length) hideHistory();
+  }
+
+  function setJobsError(text) {
+    jobsNote.textContent = text || jobsNoteDefault;
+    jobsNote.className = "jobs-note" + (text ? " err" : "");
+  }
+
+  function renderJobs(jobs) {
+    lastJobs = Array.isArray(jobs) ? jobs.slice() : [];
+    var active = 0;
+    for (var i = 0; i < lastJobs.length; i++) {
+      if (lastJobs[i].state !== "done" && lastJobs[i].state !== "failed") active += 1;
+    }
+    jobsBadge.textContent = String(active);
+    jobsBadge.hidden = active === 0;
+    jobsList.replaceChildren();
+    if (!lastJobs.length) {
+      var empty = document.createElement("div");
+      empty.className = "jobs-empty";
+      empty.textContent = "No ingestion jobs in this admin process.";
+      jobsList.appendChild(empty);
+      return;
+    }
+    var sorted = lastJobs.slice().sort(function (a, b) {
+      return String(b.started_at || "").localeCompare(String(a.started_at || ""));
+    });
+    for (var j = 0; j < sorted.length; j++) jobsList.appendChild(jobRow(sorted[j]));
+  }
+
+  function jobNumber(value) {
+    return typeof value === "number" ? String(value) : "0";
+  }
+
+  function jobRow(job) {
+    var row = document.createElement("div");
+    row.className = "job";
+    var head = document.createElement("div");
+    head.className = "job-head";
+    var id = document.createElement("span");
+    id.className = "job-id";
+    id.textContent = String(job.job_id || "").slice(0, 8);
+    id.title = String(job.job_id || "");
+    var vault = document.createElement("span");
+    vault.className = "job-counts";
+    vault.textContent = job.vault || "";
+    var state = document.createElement("span");
+    state.className = "job-state " + String(job.state || "");
+    state.textContent = String(job.state || "?");
+    head.appendChild(id);
+    head.appendChild(vault);
+    head.appendChild(state);
+    row.appendChild(head);
+    var counts = job.counts || {};
+    var line = document.createElement("div");
+    line.className = "job-counts";
+    line.textContent = "up " + jobNumber(counts.uploaded) +
+      " · conv " + jobNumber(counts.converted) +
+      " · ins " + jobNumber(counts.inserted) +
+      " · upd " + jobNumber(counts.updated) +
+      " · fail " + jobNumber(counts.failed) +
+      " · skip " + jobNumber(counts.skipped);
+    row.appendChild(line);
+    if (job.error) {
+      var error = document.createElement("div");
+      error.className = "job-error";
+      error.textContent = String(job.error);
+      row.appendChild(error);
+    }
+    return row;
+  }
+
+  function closeMenu() {
+    if (menuEl.hidden) return;
+    menuEl.hidden = true;
+    if (jobsPane.hidden) backdrop.hidden = true;
+    menuButton.setAttribute("aria-expanded", "false");
+    menuButton.focus();
+  }
+
+  function openMenu() {
+    menuEl.hidden = false;
+    backdrop.hidden = false;
+    menuButton.setAttribute("aria-expanded", "true");
+    var first = menuEl.querySelector(".menu-item:not([hidden])");
+    if (first) first.focus();
+  }
+
+  function closeJobs() {
+    if (jobsPane.hidden) return;
+    jobsPane.hidden = true;
+    if (menuEl.hidden) backdrop.hidden = true;
+    vscode.postMessage({ type: "hideJobs" });
+  }
+
+  function submitSearch() {
+    if (busy) return;
+    var query = queryInput.value.trim();
+    if (!query) {
+      setStatus("Enter a query to search.", "err");
+      queryInput.focus();
+      return;
+    }
+    var type = typeInput.value.trim();
+    var tags = tagsInput.value.trim();
+    var params = { query: query, mode: segmentValue(modeGroup), limit: Number(segmentValue(limitGroup)) };
+    if (vaultSelect.value) params.vault = vaultSelect.value;
+    if (type) params.type = type;
+    if (tags) params.tags = tags;
+    pending += 1;
+    setBusy(true);
+    setStatus("Searching…");
+    hideHistory();
+    persist();
+    vscode.postMessage({ type: "search", requestId: pending, params: params });
+  }
+
+  $("search-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    submitSearch();
+  });
+
+  $("btn-settings").addEventListener("click", function () {
+    vscode.postMessage({ type: "openSettings" });
+  });
+
+  $("btn-refresh").addEventListener("click", function () {
+    this.disabled = true;
+    vscode.postMessage({ type: "refresh" });
+  });
+
+  $("btn-admin").addEventListener("click", function () {
     vscode.postMessage({ type: "openAdmin" });
   });
 
-  $("open-settings").addEventListener("click", function () {
-    vscode.postMessage({ type: "openSettings" });
+  menuButton.addEventListener("click", function () {
+    if (menuEl.hidden) openMenu();
+    else closeMenu();
+  });
+
+  menuEl.addEventListener("click", function (event) {
+    var target = event.target;
+    var item = target && target.closest ? target.closest(".menu-item") : null;
+    if (!item) return;
+    if (item.getAttribute("aria-disabled") === "true") {
+      event.preventDefault();
+      return;
+    }
+    closeMenu();
+  });
+
+  backdrop.addEventListener("click", function () {
+    closeMenu();
+    closeJobs();
+  });
+
+  $("menu-console").addEventListener("click", function () {
+    vscode.postMessage({ type: "openAdmin" });
+  });
+
+  $("menu-git").addEventListener("click", function () {
+    vscode.postMessage({ type: "openGitPage" });
+  });
+
+  $("menu-upload-files").addEventListener("click", function () {
+    vscode.postMessage({ type: "upload", kind: "files" });
+  });
+
+  $("menu-upload-folder").addEventListener("click", function () {
+    vscode.postMessage({ type: "upload", kind: "folder" });
+  });
+
+  $("menu-progress").addEventListener("click", function () {
+    vscode.postMessage({ type: "showJobs" });
+  });
+
+  menuReloadMcp.addEventListener("click", function () {
+    if (menuReloadMcp.getAttribute("aria-disabled") === "true") return;
+    vscode.postMessage({ type: "reloadMcp" });
+  });
+
+  $("jobs-close").addEventListener("click", closeJobs);
+
+  $("jobs-refresh").addEventListener("click", function () {
+    vscode.postMessage({ type: "refreshJobs" });
+  });
+
+  $("jobs-open").addEventListener("click", function () {
+    vscode.postMessage({ type: "openIngestPage" });
   });
 
   vaultSelect.addEventListener("change", function () {
@@ -335,52 +937,208 @@ export function renderLauncherHtml(
     vscode.postMessage({ type: "switchVault", name: vaultSelect.value });
   });
 
-  $("search-form").addEventListener("submit", function (event) {
-    event.preventDefault();
-    if (busy) return;
-    const query = queryInput.value.trim();
-    if (!query) {
-      setStatus("Enter a query to search.", "err");
-      queryInput.focus();
+  queryInput.addEventListener("input", function () {
+    persist();
+    if (historyOpen) {
+      historyIndex = -1;
+      renderHistory();
+    }
+  });
+
+  queryInput.addEventListener("focus", function () {
+    showHistory();
+  });
+
+  queryInput.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") {
+      if (historyOpen) {
+        event.preventDefault();
+        hideHistory();
+      }
       return;
     }
-    pending += 1;
-    setBusy(true);
-    setStatus("Searching…");
-    vscode.postMessage({
-      type: "search",
-      requestId: pending,
-      params: {
-        query: query,
-        vault: vaultSelect.value || undefined,
-        mode: modeSelect.value,
-        limit: Number(limitInput.value),
-        type: typeInput.value,
-        tags: tagsInput.value
+    if (!historyOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      showHistory();
+      return;
+    }
+    if (!historyOpen) return;
+    var items = filteredHistory();
+    if (!items.length) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      historyIndex = (historyIndex + 1) % items.length;
+      renderHistory();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      historyIndex = historyIndex <= 0 ? items.length - 1 : historyIndex - 1;
+      renderHistory();
+    } else if (event.key === "Enter" && historyIndex >= 0 && historyIndex < items.length) {
+      event.preventDefault();
+      chooseHistory(items[historyIndex]);
+    }
+  });
+
+  function onSegmentClick(group) {
+    return function (event) {
+      var target = event.target.closest ? event.target.closest(".seg") : null;
+      if (!target || !group.contains(target)) return;
+      setSegmentValue(group, target.getAttribute("data-value"));
+      persist();
+    };
+  }
+  function onSegmentKey(group) {
+    return function (event) {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home" && event.key !== "End") return;
+      var options = Array.prototype.slice.call(group.querySelectorAll(".seg"));
+      var index = options.indexOf(document.activeElement);
+      if (index === -1) index = options.indexOf(group.querySelector('[aria-checked="true"]'));
+      var next;
+      if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = options.length - 1;
+      else if (event.key === "ArrowLeft") next = (index - 1 + options.length) % options.length;
+      else next = (index + 1) % options.length;
+      event.preventDefault();
+      setSegmentValue(group, options[next].getAttribute("data-value"));
+      options[next].focus();
+      persist();
+    };
+  }
+  modeGroup.addEventListener("click", onSegmentClick(modeGroup));
+  limitGroup.addEventListener("click", onSegmentClick(limitGroup));
+  modeGroup.addEventListener("keydown", onSegmentKey(modeGroup));
+  limitGroup.addEventListener("keydown", onSegmentKey(limitGroup));
+  typeInput.addEventListener("input", function () {
+    updateFilterCount();
+    persist();
+  });
+  tagsInput.addEventListener("input", function () {
+    updateFilterCount();
+    persist();
+  });
+  filtersToggle.addEventListener("click", function () {
+    setFiltersOpen(filters.hidden);
+    persist();
+  });
+  filtersClear.addEventListener("click", function () {
+    typeInput.value = "";
+    tagsInput.value = "";
+    updateFilterCount();
+    persist();
+  });
+
+  document.addEventListener("click", function (event) {
+    if (!historyOpen) return;
+    var target = event.target;
+    if (historyEl.contains(target) || queryInput.contains(target)) return;
+    hideHistory();
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") {
+      if (!jobsPane.hidden) {
+        closeJobs();
+        return;
       }
-    });
+      if (!menuEl.hidden) {
+        closeMenu();
+        return;
+      }
+      if (historyOpen) hideHistory();
+    }
+    if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey) return;
+    var tag = document.activeElement ? document.activeElement.tagName : "";
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    event.preventDefault();
+    queryInput.focus();
+    queryInput.select();
   });
 
   window.addEventListener("message", function (event) {
-    const message = event.data || {};
+    var message = event.data || {};
+    if (message.type === "server") {
+      renderServer(message.status);
+      return;
+    }
+    if (message.type === "mcp") {
+      renderMcp(message);
+      return;
+    }
     if (message.type === "vaults") {
       renderVaults(message.data || {});
-    } else if (message.type === "vault") {
+      return;
+    }
+    if (message.type === "vault") {
       currentVault = message.current || currentVault;
       if (currentVault) vaultSelect.value = currentVault;
-      setStatus("Current knowledge base: " + currentVault);
-    } else if (message.type === "results") {
+      return;
+    }
+    if (message.type === "history") {
+      setHistory(message.items);
+      return;
+    }
+    if (message.type === "results") {
       if (message.requestId !== pending) return;
       setBusy(false);
       renderResults(message.data || {});
-    } else if (message.type === "error") {
+      return;
+    }
+    if (message.type === "refreshed") {
+      $("btn-refresh").disabled = false;
+      return;
+    }
+    if (message.type === "ingestProgress") {
+      var progress = "Working…";
+      if (message.phase === "uploading" && message.total) {
+        progress = "Uploading " + message.done + "/" + message.total +
+          (message.current ? " · " + message.current : "");
+      } else if (message.phase === "scanning") {
+        progress = "Scanning the selection…";
+      } else if (message.phase === "starting") {
+        progress = "Starting conversion…";
+      }
+      setIngest(progress, "", true);
+      return;
+    }
+    if (message.type === "ingestResult") {
+      var parts = [String(message.uploaded || 0) + " uploaded"];
+      if (message.rejected) parts.push(String(message.rejected) + " rejected");
+      var skipped = Array.isArray(message.skipped) ? message.skipped.length : 0;
+      if (skipped) parts.push(String(skipped) + " skipped");
+      setIngest("Ingestion queued · " + parts.join(" · "), "ok", false);
+      return;
+    }
+    if (message.type === "jobs") {
+      setJobsError("");
+      renderJobs(message.jobs);
+      return;
+    }
+    if (message.type === "jobsOpen") {
+      jobsPane.hidden = false;
+      backdrop.hidden = false;
+      return;
+    }
+    if (message.type === "error") {
       if (typeof message.requestId === "number" && message.requestId !== pending) return;
+      var scope = message.scope || "";
+      var text = message.message || "Something went wrong.";
+      if (scope === "upload") {
+        setIngest(text, "err", false);
+        return;
+      }
+      if (scope === "jobs") {
+        setJobsError(text);
+        return;
+      }
       setBusy(false);
-      if (currentVault) vaultSelect.value = currentVault;
-      setStatus(message.message || "Something went wrong.", "err");
+      $("btn-refresh").disabled = false;
+      if (currentVault && (scope === "vaults" || scope === "search" || scope === "switch")) {
+        vaultSelect.value = currentVault;
+      }
+      setStatus(text, "err");
     }
   });
 
+  updateFilterCount();
   vscode.postMessage({ type: "ready" });
 })();
 </script>
@@ -424,25 +1182,28 @@ async function openInSimpleBrowser(url: string): Promise<void> {
 export interface LauncherDeps {
   extensionId: string;
   ensureRunning: () => Promise<ServerStatus>;
+  getStatus: () => ServerStatus;
+  history: SearchHistoryStore;
+  mcp: McpProviderHandle;
 }
 
 export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
   private currentVault = "";
+  private uploading = false;
+  private jobsVisible = false;
+  private jobsTimer: ReturnType<typeof setInterval> | undefined;
+  private jobsPolling = false;
+  private lastJobs: IngestJobSummary[] = [];
+  private lastRunning = false;
 
-  constructor(
-    private readonly extensionUri: vscode.Uri,
-    private readonly deps: LauncherDeps
-  ) {}
+  constructor(private readonly deps: LauncherDeps) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
     view.webview.options = { enableScripts: true, enableCommandUris: true };
     const nonce = randomUUID().replace(/-/g, "");
-    const iconUri = view.webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "resources", "icon.png")
-    );
-    view.webview.html = renderLauncherHtml(view.webview, { iconUri, nonce });
+    view.webview.html = renderLauncherHtml({ nonce });
 
     const messageSub = view.webview.onDidReceiveMessage((message: unknown) => {
       void this.handleMessage(message);
@@ -453,12 +1214,39 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
     view.onDidDispose(() => {
       messageSub.dispose();
       visibilitySub.dispose();
+      this.jobsVisible = false;
+      this.stopJobPolling();
       if (this.view === view) this.view = undefined;
     });
+
+    const status = this.deps.getStatus();
+    this.lastRunning = isRunningStatus(status);
+    this.postServer(status);
+    this.postMcp();
 
     // Start (or reuse) the admin server without stealing focus. The webview asks
     // for vaults once its message listener is installed.
     void this.deps.ensureRunning().catch(() => undefined);
+  }
+
+  updateStatus(status: ServerStatus): void {
+    const running = isRunningStatus(status);
+    const becameRunning = running && !this.lastRunning;
+    this.lastRunning = running;
+    this.postServer(status);
+    if (becameRunning && this.view) void this.refreshVaults();
+    if (running) {
+      if (this.jobsVisible) {
+        void this.refreshJobs();
+        this.startJobPolling();
+      }
+    } else {
+      this.stopJobPolling();
+      if (this.jobsVisible && (status.state === "stopped" || status.state === "error")) {
+        this.lastJobs = [];
+        this.post({ type: "jobs", jobs: [] });
+      }
+    }
   }
 
   private async handleMessage(raw: unknown): Promise<void> {
@@ -466,10 +1254,23 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
     const message = raw as Record<string, unknown>;
     switch (message.type) {
       case "ready":
+        // The webview has installed its listener now; repost what resolveWebviewView
+        // sent before the script was running.
+        this.postServer(this.deps.getStatus());
+        this.postMcp();
         await this.refreshVaults();
+        return;
+      case "refresh":
+        await this.refreshAll();
         return;
       case "openAdmin":
         await this.openAdmin();
+        return;
+      case "openGitPage":
+        await this.openPage("/git");
+        return;
+      case "openIngestPage":
+        await this.openPage("/ingest");
         return;
       case "openSettings":
         try {
@@ -490,7 +1291,7 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
         const params = asSearchParams(message.params);
         const requestId = typeof message.requestId === "number" ? message.requestId : 0;
         if (!params) {
-          this.post({ type: "error", requestId, message: "invalid search request" });
+          this.postError(new Error("invalid search request"), requestId, "search");
           return;
         }
         await this.search(params, requestId);
@@ -500,6 +1301,32 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
         if (typeof message.id === "string" && message.id) {
           await this.openDocument(message.id);
         }
+        return;
+      case "reloadMcp":
+        this.reloadMcp();
+        return;
+      case "upload":
+        if (message.kind === "files" || message.kind === "folder") {
+          await this.upload(message.kind);
+        }
+        return;
+      case "showJobs":
+        this.showJobs();
+        return;
+      case "hideJobs":
+        this.jobsVisible = false;
+        this.stopJobPolling();
+        return;
+      case "refreshJobs":
+        await this.refreshJobs();
+        return;
+      case "forgetQuery":
+        if (typeof message.query === "string" && message.query) {
+          await this.forgetQuery(message.query);
+        }
+        return;
+      case "clearHistory":
+        await this.clearHistory();
         return;
     }
   }
@@ -512,13 +1339,22 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
     return status.port;
   }
 
+  private async refreshAll(): Promise<void> {
+    this.postServer(this.deps.getStatus());
+    this.postMcp();
+    await this.refreshVaults();
+    if (this.jobsVisible) await this.refreshJobs();
+    this.post({ type: "refreshed" });
+  }
+
   private async refreshVaults(): Promise<void> {
     try {
       const data = await fetchVaults(await this.port());
       this.currentVault = data.current;
       this.post({ type: "vaults", data });
+      this.postHistory();
     } catch (error) {
-      this.postError(error);
+      this.postError(error, undefined, "vaults");
     }
   }
 
@@ -531,12 +1367,22 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async openPage(route: string): Promise<void> {
+    try {
+      const port = await this.port();
+      await openInSimpleBrowser(`http://127.0.0.1:${port}${route}`);
+    } catch (error) {
+      this.postError(error);
+    }
+  }
+
   private async switchTo(name: string): Promise<void> {
     try {
       this.currentVault = await switchVault(await this.port(), name);
       this.post({ type: "vault", current: this.currentVault });
+      this.postHistory();
     } catch (error) {
-      this.postError(error);
+      this.postError(error, undefined, "switch");
     }
   }
 
@@ -550,9 +1396,47 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
       });
       this.currentVault = outcome.current;
       this.post({ type: "results", requestId, data: outcome.result });
+      await this.recordQuery(params.query);
     } catch (error) {
-      this.postError(error, requestId);
+      this.postError(error, requestId, "search");
     }
+  }
+
+  private async recordQuery(query: string): Promise<void> {
+    if (!this.currentVault) return;
+    try {
+      const items = await this.deps.history.record(this.currentVault, query);
+      this.post({ type: "history", vault: this.currentVault, items });
+    } catch (error) {
+      // History is a convenience; a failed write must not break search.
+      logLine(`search history: ${errorText(error)}`);
+    }
+  }
+
+  private async forgetQuery(query: string): Promise<void> {
+    try {
+      const items = await this.deps.history.remove(this.currentVault, query);
+      this.post({ type: "history", vault: this.currentVault, items });
+    } catch (error) {
+      this.postError(error);
+    }
+  }
+
+  private async clearHistory(): Promise<void> {
+    try {
+      const items = await this.deps.history.clear(this.currentVault);
+      this.post({ type: "history", vault: this.currentVault, items });
+    } catch (error) {
+      this.postError(error);
+    }
+  }
+
+  private postHistory(): void {
+    this.post({
+      type: "history",
+      vault: this.currentVault,
+      items: this.deps.history.items(this.currentVault),
+    });
   }
 
   private async openDocument(id: string): Promise<void> {
@@ -564,16 +1448,182 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private reloadMcp(): void {
+    const reloaded = this.deps.mcp.reload();
+    this.post({
+      type: "mcp",
+      available: this.deps.mcp.available,
+      registered: this.deps.mcp.registered,
+      reloaded,
+    });
+  }
+
+  private postMcp(): void {
+    this.post({
+      type: "mcp",
+      available: this.deps.mcp.available,
+      registered: this.deps.mcp.registered,
+    });
+  }
+
+  /**
+   * Stage the selection through the admin ingest API, then start one job.
+   * Files are uploaded one at a time; a batch-limit 409 aborts the rest.
+   */
+  private async upload(kind: "files" | "folder"): Promise<void> {
+    if (this.uploading) {
+      this.postError(new Error("An upload is already running."), undefined, "upload");
+      return;
+    }
+    const picked = await vscode.window.showOpenDialog(
+      kind === "folder"
+        ? {
+            canSelectFiles: false,
+            canSelectFolders: true,
+            canSelectMany: false,
+            openLabel: "Upload folder",
+            title: "hyseed: upload a folder",
+          }
+        : {
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: true,
+            openLabel: "Upload files",
+            title: "hyseed: upload files",
+          }
+    );
+    if (!picked || picked.length === 0) return;
+
+    this.uploading = true;
+    try {
+      this.post({ type: "ingestProgress", phase: "scanning" });
+      const port = await this.port();
+      const limits = await fetchIngestLimits(port);
+      const plan =
+        kind === "folder"
+          ? await planFolderUpload(picked[0].fsPath, limits)
+          : await planFileSelection(
+              picked.map((uri) => uri.fsPath),
+              limits
+            );
+      const batch = await createIngestBatch(port, this.currentVault);
+      if (!this.currentVault && batch.vault) this.currentVault = batch.vault;
+
+      const total = plan.files.length;
+      let uploaded = 0;
+      let rejected = 0;
+      for (let index = 0; index < plan.files.length; index++) {
+        const file = plan.files[index];
+        this.post({
+          type: "ingestProgress",
+          phase: "uploading",
+          done: index,
+          total,
+          current: file.rel,
+        });
+        try {
+          const result = await postIngestFile(
+            port,
+            batch.batch_id,
+            file,
+            kind === "folder" ? "folder" : "upload"
+          );
+          if (result.ok) uploaded += 1;
+          else rejected += 1;
+        } catch (error) {
+          if (error instanceof IngestHttpError && error.status === 409) throw error;
+          rejected += 1;
+          logLine(`ingest upload failed for ${file.rel}: ${errorText(error)}`);
+        }
+      }
+      if (uploaded === 0) {
+        throw new Error(
+          rejected > 0 ? `The server rejected all ${rejected} file(s).` : "No files were uploaded."
+        );
+      }
+      this.post({ type: "ingestProgress", phase: "starting", done: total, total });
+      const started = await startIngestBatch(port, batch.batch_id);
+      this.post({
+        type: "ingestResult",
+        uploaded,
+        rejected,
+        skipped: plan.skipped,
+        jobId: started.job_id,
+      });
+      this.showJobs();
+    } catch (error) {
+      this.postError(error, undefined, "upload");
+    } finally {
+      this.uploading = false;
+    }
+  }
+
+  private showJobs(): void {
+    if (!this.view) return;
+    this.jobsVisible = true;
+    this.post({ type: "jobsOpen" });
+    void this.refreshJobs();
+    this.startJobPolling();
+  }
+
+  private async refreshJobs(): Promise<boolean> {
+    try {
+      const jobs = await listIngestJobs(await this.port());
+      this.lastJobs = jobs;
+      this.post({ type: "jobs", jobs });
+      return true;
+    } catch (error) {
+      this.postError(error, undefined, "jobs");
+      return false;
+    }
+  }
+
+  private startJobPolling(): void {
+    if (this.jobsTimer !== undefined) return;
+    this.jobsTimer = setInterval(() => {
+      void this.pollJobs();
+    }, 2000);
+  }
+
+  private stopJobPolling(): void {
+    if (this.jobsTimer !== undefined) {
+      clearInterval(this.jobsTimer);
+      this.jobsTimer = undefined;
+    }
+  }
+
+  private async pollJobs(): Promise<void> {
+    if (this.jobsPolling) return;
+    if (!this.view || !this.jobsVisible) {
+      this.stopJobPolling();
+      return;
+    }
+    this.jobsPolling = true;
+    try {
+      const ok = await this.refreshJobs();
+      if (!ok || !this.lastJobs.some((job) => job.state !== "done" && job.state !== "failed")) {
+        this.stopJobPolling();
+      }
+    } finally {
+      this.jobsPolling = false;
+    }
+  }
+
+  private postServer(status: ServerStatus): void {
+    this.post({ type: "server", status });
+  }
+
   private post(message: unknown): void {
     void this.view?.webview.postMessage(message);
   }
 
-  private postError(error: unknown, requestId?: number): void {
+  private postError(error: unknown, requestId?: number, scope?: string): void {
     const message: Record<string, unknown> = {
       type: "error",
       message: errorText(error),
     };
     if (requestId !== undefined) message.requestId = requestId;
+    if (scope) message.scope = scope;
     this.post(message);
   }
 }
