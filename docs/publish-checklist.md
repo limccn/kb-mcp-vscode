@@ -12,6 +12,7 @@ run `vsce publish` / `ovsx publish` anywhere; publishing is a manual, user-appro
 - [ ] `"repository"` is not set in `package.json`; the 0.2.0 build was published with
       `--allow-missing-repository`. If a public repository URL is confirmed, add
       `repository` / `bugs` / `homepage` before the next release and drop the flag.
+- [ ] Set the GitHub About description, topics, and social preview from `docs/github-metadata.md`.
 - [ ] Confirm `displayName` (`hyseed`) and the `hyseed:` command prefix are final.
 - [ ] Confirm `categories` / `keywords` / `icon` (`resources/icon.png`) in `package.json`.
       The activity bar uses separate 24×24 stroke-only line art (`resources/activitybar.svg`);
@@ -47,7 +48,7 @@ gets committed. Both CLIs read those variables by default, so no `--pat` argumen
 npx vsce publish -i kbmcp-vscode-win32-x64-0.2.0.vsix --allow-missing-repository
 ```
 
-**Open VSX** (namespace `limccn`, already created; current published version 0.1.1):
+**Open VSX** (namespace `limccn`; 0.2.0 published 2026-11-02):
 
 ```bat
 npx ovsx verify-pat limccn

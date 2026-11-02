@@ -3,6 +3,7 @@ dist/
 out/
 resources/hyseed.exe
 resources/doc-convert.exe
+assets/bin/
 *.vsix
 .vscode-test/
 .env

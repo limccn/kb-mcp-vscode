@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="hi, seedling — hyseed, an open-source local knowledge base for AI agents">
+
+  <defs>
+    <radialGradient id="glow" cx="640" cy="250" r="560" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1c985a" stop-opacity="0.34"/>
+      <stop offset="0.55" stop-color="#1c985a" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#1c985a" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#3ddc8a" stroke-opacity="0.055" stroke-width="1"/>
+    </pattern>
+    <radialGradient id="vignette" cx="50%" cy="50%" r="72%">
+      <stop offset="0.55" stop-color="#0b0f0d" stop-opacity="0"/>
+      <stop offset="1" stop-color="#0b0f0d" stop-opacity="0.85"/>
+    </radialGradient>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+  <rect width="1280" height="640" fill="#0b0f0d"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+  <rect width="1280" height="640" fill="url(#vignette)"/>
+
+  <g fill="none" stroke="#3ddc8a" stroke-opacity="0.05">
+    <circle cx="640" cy="330" r="238" stroke-width="1.2"/>
+    <circle cx="640" cy="330" r="308" stroke-width="1.2"/>
+    <circle cx="640" cy="330" r="378" stroke-width="1.2"/>
+  </g>
+  <g>
+    <rect x="405" y="72" width="470" height="36" rx="18" fill="#111a15" stroke="#223129"/>
+    <circle cx="429" cy="90" r="3.5" fill="#3ddc8a"/>
+    <text x="443" y="95" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="600" letter-spacing="2.4" fill="#9fb6aa">OPEN SOURCE  ·  LOCAL-FIRST  ·  MCP-NATIVE</text>
+  </g>
+  <text x="493" y="300" font-family="Segoe UI Black, Segoe UI, Arial, sans-serif" font-size="118" font-weight="900" fill="#ffffff">hi,</text>
+<image x="668" y="200" width="118" height="118" href="data:image/png;base64,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" clip-path="inset(0 round 30)"/>
+  <text x="640" y="390" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="64" font-weight="700" letter-spacing="-1.8" fill="#e8f2ec">hyseed</text>
+  <text x="640" y="438" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="26" fill="#9fb6aa">A local-first knowledge base for AI agents.</text>
+
+  <g>
+    <rect x="400.0" y="486" width="132" height="32" rx="16" fill="#111a15" stroke="#2f4438"/>
+    <circle cx="417.0" cy="502" r="3.5" fill="#3ddc8a"/>
+    <text x="429.0" y="507" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600" fill="#e8f2ec">VS Code 1.101+</text>
+  </g>
+
+  <g>
+    <rect x="535.0" y="486" width="106" height="32" rx="16" fill="#111a15" stroke="#2f4438"/>
+    <circle cx="552.0" cy="502" r="3.5" fill="#3ddc8a"/>
+    <text x="564.0" y="507" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600" fill="#e8f2ec">MCP-native</text>
+  </g>
+
+  <g>
+    <rect x="647.0" y="486" width="102" height="32" rx="16" fill="#111a15" stroke="#2f4438"/>
+    <circle cx="664.0" cy="502" r="3.5" fill="#3ddc8a"/>
+    <text x="676.0" y="507" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600" fill="#e8f2ec">MIT license</text>
+  </g>
+
+  <g>
+    <rect x="755.0" y="486" width="118" height="32" rx="16" fill="#111a15" stroke="#2f4438"/>
+    <circle cx="772.0" cy="502" r="3.5" fill="#3ddc8a"/>
+    <text x="784.0" y="507" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600" fill="#e8f2ec">Windows x64</text>
+  </g>
+  <text x="640" y="592" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="600" letter-spacing="0.4" fill="#6f8579">github.com/limccn/kb-mcp-vscode</text>
+</svg>

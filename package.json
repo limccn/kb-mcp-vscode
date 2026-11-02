@@ -275,7 +275,7 @@
     "test:integration": "npm run build && node scripts/run-integration.mjs",
     "check:docs": "node scripts/check-docs.mjs",
     "vscode:prepublish": "node esbuild.mjs",
-    "package": "npm run build && node scripts/prepare-runtime.mjs && npm run check:docs && npx vsce package --target win32-x64 && node scripts/check-vsix-size.mjs"
+    "package": "npm run build && node scripts/prepare-runtime.mjs && npm run check:docs && npx vsce package --target win32-x64 --allow-missing-repository --baseContentUrl https://github.com/limccn/kb-mcp-vscode/blob/main/ --baseImagesUrl https://raw.githubusercontent.com/limccn/kb-mcp-vscode/main/ && node scripts/check-vsix-size.mjs"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

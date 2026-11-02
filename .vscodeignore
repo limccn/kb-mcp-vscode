@@ -11,3 +11,6 @@ package-lock.json
 **/*.map
 *.vsix
 portal/**
+assets/**
+bin/**
+resources/README.md
