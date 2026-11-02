@@ -1,6 +1,17 @@
 import * as vscode from "vscode";
-import { COMMANDS, DISPLAY_NAME } from "./constants";
-import type { ServerStatus } from "./server";
+import { COMMANDS } from "./constants";
+import { isNonLoopback } from "./host";
+import type { ServerState, ServerStatus } from "./server";
+
+const STATUS_LABEL = "Hyseed";
+const STATUS_ICONS: Record<ServerState, string> = {
+  stopped: "$(circle-slash)",
+  starting: "$(sync~spin)",
+  "running-own": "$(check)",
+  "running-external": "$(check)",
+  stopping: "$(sync~spin)",
+  error: "$(warning)",
+};
 
 export interface StatusInfo {
   runtimePath?: string;
@@ -18,9 +29,15 @@ export class StatusBar {
   }
 
   update(status: ServerStatus, info: StatusInfo = {}): void {
-    this.item.text = `${DISPLAY_NAME}: ${status.state}`;
+    const running = status.state === "running-own" || status.state === "running-external";
+    const lan = running && isNonLoopback(status.host);
+    this.item.text = `${lan ? "$(warning)" : STATUS_ICONS[status.state]} ${STATUS_LABEL}`;
+    this.item.backgroundColor = lan
+      ? new vscode.ThemeColor("statusBarItem.warningBackground")
+      : undefined;
     const parts = [
       `state: ${status.state}`,
+      `host: ${status.host ?? "127.0.0.1"}`,
       `port: ${status.port ?? "-"}`,
       `runtime: ${info.runtimePath ?? "auto-detect"}`,
       `data root: ${info.dataRoot || "runtime default"}`,

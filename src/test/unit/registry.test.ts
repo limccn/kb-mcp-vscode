@@ -266,6 +266,21 @@ describe("CLI registry", () => {
     assert.deepEqual(invocation?.args, ["serve", "--transport", "http", "--port", "8000"]);
     assert.equal(invocation?.needsToken, true);
 
+    const custom = await build(
+      COMMANDS.cliServeHttp,
+      new ScriptedUi({ inputs: ["8000"], confirms: [true] }),
+      { ...ctx(), host: "::" }
+    );
+    assert.deepEqual(custom?.args, [
+      "serve",
+      "--transport",
+      "http",
+      "--host",
+      "::",
+      "--port",
+      "8000",
+    ]);
+
     for (const answers of [
       { inputs: ["70000"] },
       { inputs: ["abc"] },

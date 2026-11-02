@@ -1,4 +1,5 @@
 import * as assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
@@ -6,6 +7,7 @@ import { createServer } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import type { CliToolsReport } from "../../cliTools";
 import type { CliDeps } from "../../cli/flow";
 import type { CliUi } from "../../cli/registry";
 import {
@@ -18,12 +20,19 @@ import {
   type IngestJobSummary,
 } from "../../ingest";
 import type { SkillsDeps, SkillsUi } from "../../mcp/flow";
+import type { OnboardingReason } from "../../onboarding/state";
 import type { VaultScope, VaultsDeps, VaultsUi } from "../../vaults/flow";
 import type { VaultListState } from "../../vaults/vaults";
 
 interface HyseedApi {
   provideMcpServerDefinitions(extensionPath: string): Promise<vscode.McpServerDefinition[]>;
   installSkillsFlow(ui: SkillsUi, deps: SkillsDeps): Promise<void>;
+  installCliTools(options?: {
+    resourcesDir?: string;
+    targetDir?: string;
+    pathEnv?: string;
+    platform?: NodeJS.Platform;
+  }): Promise<CliToolsReport>;
   removeSkillsFlow(ui: SkillsUi, deps: SkillsDeps): Promise<void>;
   showSkillsStateFlow(ui: SkillsUi, deps: SkillsDeps): Promise<void>;
   createSkillsDeps(options?: { env?: NodeJS.ProcessEnv; cwd?: string }): SkillsDeps;
@@ -39,6 +48,13 @@ interface HyseedApi {
     cwd?: string;
     sendToTerminal?: (lines: string[]) => void;
   }): CliDeps;
+  onboardingStateForTest(): {
+    open: boolean;
+    reason: OnboardingReason | null;
+    creations: number;
+    onboardedVersion: string | null;
+  };
+  finishOnboardingForTest(skipped: boolean): Promise<void>;
 }
 
 const COMMAND_IDS = [
@@ -51,12 +67,15 @@ const COMMAND_IDS = [
   "kbmcp.showLogs",
   "kbmcp.showMcpStatus",
   "kbmcp.installAgentSkills",
+  "kbmcp.installCliTools",
   "kbmcp.removeAgentSkills",
   "kbmcp.showSkillsState",
   "kbmcp.createVault",
   "kbmcp.switchVault",
   "kbmcp.clearProjectVault",
   "kbmcp.listVaults",
+  "kbmcp.resumeMigration",
+  "kbmcp.openSetupGuide",
   "kbmcp.cli.search",
   "kbmcp.cli.get",
   "kbmcp.cli.list",
@@ -247,9 +266,16 @@ function withTimeout<T>(promise: Thenable<T> | Promise<T>, ms: number, label: st
   ]);
 }
 
-function httpGet(port: number, pathName = "/"): Promise<{ status: number; body: string }> {
+function httpGet(
+  port: number,
+  pathName = "/",
+  host = "127.0.0.1",
+  family?: number
+): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = http.get({ host: "127.0.0.1", port, path: pathName, timeout: 2000 }, (res) => {
+    const options: http.RequestOptions = { host, port, path: pathName, timeout: 2000 };
+    if (family) options.family = family;
+    const req = http.get(options, (res) => {
       let body = "";
       res.setEncoding("utf8");
       res.on("data", (chunk: string) => {
@@ -262,6 +288,25 @@ function httpGet(port: number, pathName = "/"): Promise<{ status: number; body: 
       reject(new Error("timeout"));
     });
     req.on("error", reject);
+  });
+}
+
+function adminStartHelp(exe: string): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(
+      exe,
+      ["admin", "start", "--help"],
+      { timeout: 20_000, encoding: "utf8", windowsHide: true },
+      (_err, stdout, stderr) => resolve(`${stdout ?? ""}\n${stderr ?? ""}`)
+    );
+  });
+}
+
+function canBindIpv6Loopback(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => resolve(false));
+    server.listen(0, "::1", () => server.close(() => resolve(true)));
   });
 }
 
@@ -313,6 +358,44 @@ async function body(): Promise<void> {
   }
   console.log("[it] commands registered");
 
+  // First-run setup guide: the migration gate settles first, then the guide
+  // auto-opens (first install). Opening it again must reuse the singleton.
+  console.log("[it] onboarding guide leg");
+  let guide = api.onboardingStateForTest();
+  await waitFor(
+    async () => {
+      guide = api.onboardingStateForTest();
+      return guide.open;
+    },
+    60_000,
+    "setup guide auto-open"
+  );
+  assert.equal(guide.reason, "first-install", "a fresh profile is a first install");
+  assert.equal(guide.onboardedVersion, null, "nothing has marked the guide as seen yet");
+  const autoCreations = guide.creations;
+  assert.ok(autoCreations >= 1, `unexpected guide creations: ${autoCreations}`);
+
+  await withTimeout(
+    vscode.commands.executeCommand("kbmcp.openSetupGuide"),
+    20_000,
+    "kbmcp.openSetupGuide"
+  );
+  assert.equal(
+    api.onboardingStateForTest().creations,
+    autoCreations,
+    "the setup guide must stay a singleton webview"
+  );
+
+  await withTimeout(api.finishOnboardingForTest(true), 60_000, "finishOnboardingForTest");
+  const finishedGuide = api.onboardingStateForTest();
+  assert.equal(finishedGuide.open, false, "finish must close the guide");
+  assert.equal(
+    finishedGuide.onboardedVersion,
+    String(extension.packageJSON.version),
+    "finish must persist the onboarded version in globalState"
+  );
+  console.log("[it] setup guide auto-opened, stayed singleton, and finished");
+
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "hyseed-vscode-it-"));
   const port = await freePort();
   console.log(`[it] sandbox=${sandbox} port=${port}`);
@@ -325,7 +408,8 @@ async function body(): Promise<void> {
     assert.equal(written.get("adminPort"), port, "adminPort setting did not round-trip");
     console.log("[it] settings written and verified");
 
-    let runtimeExe = "";
+    let runtimeExe = path.join(extension.extensionPath, "resources", "hyseed.exe");
+    assert.ok(fs.existsSync(runtimeExe), `bundled runtime missing: ${runtimeExe}`);
     console.log("[it] provider definitions");
     const definitions = await withTimeout(
       api.provideMcpServerDefinitions(extension.extensionPath),
@@ -337,7 +421,6 @@ async function body(): Promise<void> {
     assert.equal(definition.label, "hyseed");
     assert.deepEqual(definition.args, ["serve"]);
     assert.ok(fs.existsSync(definition.command), `definition command missing: ${definition.command}`);
-    runtimeExe = definition.command;
     const providerEnv = definition.env ?? {};
     assert.equal(providerEnv.KB_MCP_HOME, sandbox);
     assert.equal(providerEnv.KB_MCP_VAULT, undefined);
@@ -394,6 +477,8 @@ async function body(): Promise<void> {
     );
     console.log("[it] admin console answered from the sandbox data root");
 
+    const readyFile = path.join(sandbox, "panel-ready.json");
+    process.env.KB_MCP_PANEL_READY_FILE = readyFile;
     await withTimeout(vscode.commands.executeCommand("kbmcp.openAdmin"), 90_000, "kbmcp.openAdmin");
     await waitFor(
       async () =>
@@ -404,6 +489,33 @@ async function body(): Promise<void> {
       "admin panel tab"
     );
     console.log("[it] admin panel open");
+
+    interface PanelReady {
+      navCount: number;
+      hasPalette: boolean;
+      apiOk: boolean;
+      href: string;
+      title: string;
+    }
+    let ready: PanelReady | undefined;
+    await waitFor(
+      async () => {
+        try {
+          ready = JSON.parse(fs.readFileSync(readyFile, "utf8")) as PanelReady;
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      30_000,
+      "panel ready file"
+    );
+    assert.ok(ready, "the panel never reported ready");
+    assert.ok(ready!.navCount >= 11, `panel reported navCount=${ready!.navCount}`);
+    assert.equal(ready!.hasPalette, true, "the command palette is missing inside the panel");
+    assert.equal(ready!.apiOk, true, "the panel iframe cannot reach the admin API");
+    delete process.env.KB_MCP_PANEL_READY_FILE;
+    console.log(`[it] panel bridge ready (nav=${ready!.navCount}, apiOk=${ready!.apiOk})`);
 
     await withTimeout(vscode.commands.executeCommand("kbmcp.stopServer"), 60_000, "kbmcp.stopServer");
     console.log("[it] stopServer returned");
@@ -848,6 +960,119 @@ async function body(): Promise<void> {
     );
     console.log("[it] launcher server stopped");
 
+    // Optional IPv6 leg: binding to ::1 proves the host setting reaches both the
+    // spawn argv and the client URLs. Skipped (not failed) while the deployed exe
+    // predates `admin start --host`, or on hosts without an IPv6 loopback.
+    console.log("[it] admin host ::1 leg");
+    const helpText = await adminStartHelp(runtimeExe);
+    if (!helpText.includes("--host")) {
+      console.warn(`[it] skipped ::1 leg: ${runtimeExe} does not support 'admin start --host'`);
+    } else if (!(await canBindIpv6Loopback())) {
+      console.warn("[it] skipped ::1 leg: ::1 is not bindable on this host");
+    } else {
+      await withTimeout(
+        config.update("adminHost", "::1", vscode.ConfigurationTarget.Global),
+        10_000,
+        "update adminHost"
+      );
+      try {
+        await withTimeout(
+          vscode.commands.executeCommand("kbmcp.startServer"),
+          90_000,
+          "kbmcp.startServer (::1)"
+        );
+        let page6: { status: number; body: string } | undefined;
+        await waitFor(
+          async () => {
+            page6 = await httpGet(port, "/", "::1", 6).catch(() => undefined);
+            return page6 !== undefined && page6.status === 200 && page6.body.includes("HySeed");
+          },
+          45_000,
+          "admin console on [::1]"
+        );
+        assert.ok(page6, "admin console was never fetched over ::1");
+        assert.equal(page6.status, 200);
+        assert.ok(page6.body.includes("HySeed"));
+        console.log("[it] admin console answered on [::1]");
+      } finally {
+        await withTimeout(
+          vscode.commands.executeCommand("kbmcp.stopServer"),
+          60_000,
+          "kbmcp.stopServer (::1)"
+        ).catch(() => undefined);
+        await withTimeout(
+          config.update("adminHost", undefined, vscode.ConfigurationTarget.Global),
+          10_000,
+          "reset adminHost"
+        ).catch(() => undefined);
+        await waitFor(
+          async () => {
+            try {
+              await httpGet(port);
+              return false;
+            } catch {
+              return true;
+            }
+          },
+          15_000,
+          "port release after ::1 stop"
+        ).catch(() => undefined);
+      }
+    }
+
+    console.log("[it] install CLI tools leg");
+    const cliToolsTarget = path.join(sandbox, "cli-tools", ".local", "bin");
+    const cliToolsResources = path.join(extension.extensionPath, "resources");
+    const firstTools = await withTimeout(
+      api.installCliTools({
+        resourcesDir: cliToolsResources,
+        targetDir: cliToolsTarget,
+        pathEnv: "C:\\Windows",
+      }),
+      180_000,
+      "installCliTools"
+    );
+    assert.deepEqual(
+      firstTools.results.map((result) => result.action),
+      ["installed", "installed"]
+    );
+    assert.equal(firstTools.pathContainsTarget, false);
+    assert.ok(firstTools.pathHint.includes(cliToolsTarget));
+    for (const name of ["hyseed.exe", "doc-convert.exe"]) {
+      assert.equal(
+        sha256File(path.join(cliToolsTarget, name)),
+        sha256File(path.join(cliToolsResources, name)),
+        `${name} does not match the bundled copy`
+      );
+    }
+    assert.deepEqual(fs.readdirSync(cliToolsTarget).sort(), ["doc-convert.exe", "hyseed.exe"]);
+    const rewrittenAt = new Date("2000-01-01T00:00:00Z");
+    for (const name of ["hyseed.exe", "doc-convert.exe"]) {
+      fs.utimesSync(path.join(cliToolsTarget, name), rewrittenAt, rewrittenAt);
+    }
+    const secondTools = await withTimeout(
+      api.installCliTools({
+        resourcesDir: cliToolsResources,
+        targetDir: cliToolsTarget,
+        pathEnv: cliToolsTarget,
+      }),
+      180_000,
+      "installCliTools (idempotent)"
+    );
+    assert.deepEqual(
+      secondTools.results.map((result) => result.action),
+      ["kept", "kept"]
+    );
+    assert.equal(secondTools.pathContainsTarget, true);
+    for (const name of ["hyseed.exe", "doc-convert.exe"]) {
+      assert.equal(
+        fs.statSync(path.join(cliToolsTarget, name)).mtimeMs,
+        rewrittenAt.getTime(),
+        `${name} was rewritten by an idempotent install`
+      );
+    }
+    console.log("[it] CLI tools installed idempotently into a sandbox target");
+
     console.log("[it] skills sandbox");
     const skillsHome = path.join(sandbox, "host-home");
     const skillsProject = path.join(sandbox, "project");
@@ -980,6 +1205,7 @@ async function body(): Promise<void> {
     assert.equal(entryOf().mcpServers.hyseed?.command, "foreign.exe");
     console.log("[it] foreign entry refusal verified");
   } finally {
+    delete process.env.KB_MCP_PANEL_READY_FILE;
     await withTimeout(
       config.update("dataRoot", undefined, vscode.ConfigurationTarget.Global),
       10_000,
@@ -1004,6 +1230,11 @@ async function body(): Promise<void> {
       config.update("projectVault", undefined, vscode.ConfigurationTarget.Global),
       10_000,
       "reset projectVault"
+    ).catch(() => undefined);
+    await withTimeout(
+      config.update("adminHost", undefined, vscode.ConfigurationTarget.Global),
+      10_000,
+      "reset adminHost"
     ).catch(() => undefined);
     try {
       fs.rmSync(sandbox, { recursive: true, force: true });

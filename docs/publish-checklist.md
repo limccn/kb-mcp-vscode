@@ -9,8 +9,9 @@ run `vsce publish` / `ovsx publish` anywhere; publishing is a manual, user-appro
       `check:docs` fails if the value is empty or still `placeholder-publisher`.
 - [ ] Confirm the `limccn` publisher exists on each target registry (Marketplace publisher id,
       Open VSX namespace) and that the PAT belongs to it.
-- [x] `"repository"` points to `https://github.com/limccn/kb-mcp-vscode` (`bugs` and `homepage`
-      point to the same repository). Keep these URLs in sync if the project moves.
+- [ ] `"repository"` is not set in `package.json`; the 0.2.0 build was published with
+      `--allow-missing-repository`. If a public repository URL is confirmed, add
+      `repository` / `bugs` / `homepage` before the next release and drop the flag.
 - [ ] Confirm `displayName` (`hyseed`) and the `hyseed:` command prefix are final.
 - [ ] Confirm `categories` / `keywords` / `icon` (`resources/icon.png`) in `package.json`.
       The activity bar uses separate 24×24 stroke-only line art (`resources/activitybar.svg`);
@@ -21,12 +22,13 @@ run `vsce publish` / `ovsx publish` anywhere; publishing is a manual, user-appro
 
 - [ ] `npm run check:docs` passes (10 checks, including the publisher gate and activity bar icon).
 - [ ] `npm run package` succeeds; record the VSIX size and sha256. The build fails if the VSIX
-      exceeds **100 MiB (104,857,600 bytes)**; expected size is 72,837,694 bytes / 13 entries
-      (vsce reports 69.46 MB).
+      exceeds **100 MiB (104,857,600 bytes)**; the 0.2.0 build is 72,642,968 bytes / 13 entries
+      (vsce reports 69.28 MB), sha256
+      `6f13102d82f05e795419893e6987a623811ad61b52b33802c6bcb4d6c313d9c6`.
 - [ ] `npx vsce ls` contains: `dist/extension.js`, `resources/hyseed.exe`,
       `resources/doc-convert.exe`, `resources/icon.png`, `resources/activitybar.svg`,
       `README.md`, `README.zh-CN.md`, `README.ja.md`, `CHANGELOG.md`, `LICENSE`; and excludes
-      `src/`, `scripts/`, `test/`, `docs/`, `out/`, `node_modules/`.
+      `src/`, `scripts/`, `test/`, `docs/`, `out/`, `portal/`, `node_modules/`.
 - [ ] Install the VSIX into a clean profile and smoke-test activation:
       `code --install-extension <vsix> --extensions-dir <temp> --user-data-dir <temp>`.
       `code --list-extensions` must show `limccn.kbmcp-vscode`.
@@ -34,23 +36,22 @@ run `vsce publish` / `ovsx publish` anywhere; publishing is a manual, user-appro
 
 ## 3. Distribution channels
 
-Both channels reuse the same `kbmcp-vscode-win32-x64-0.1.1.vsix` — the `win32-x64` target is baked
+Both channels reuse the same `kbmcp-vscode-win32-x64-0.2.0.vsix` — the `win32-x64` target is baked
 in at packaging time, so do not repackage per channel. Keep PATs in environment variables
 (`VSCE_PAT`, `OVSX_PAT`); never write a token into this repository, a script, or a command line that
 gets committed. Both CLIs read those variables by default, so no `--pat` argument is needed.
 
-**VS Code Marketplace** (publisher id `limccn`):
+**VS Code Marketplace** (publisher id `limccn`; 0.2.0 published 2026-11-02):
 
 ```bat
-npx vsce publish -i kbmcp-vscode-win32-x64-0.1.1.vsix
+npx vsce publish -i kbmcp-vscode-win32-x64-0.2.0.vsix --allow-missing-repository
 ```
 
-**Open VSX** (namespace `limccn`; create it once, then verify the PAT):
+**Open VSX** (namespace `limccn`, already created; current published version 0.1.1):
 
 ```bat
-npx ovsx create-namespace limccn
 npx ovsx verify-pat limccn
-npx ovsx publish kbmcp-vscode-win32-x64-0.1.1.vsix
+npx ovsx publish kbmcp-vscode-win32-x64-0.2.0.vsix --allow-missing-repository
 ```
 
 After the first publish, users install with `code --install-extension limccn.kbmcp-vscode`

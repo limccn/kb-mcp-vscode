@@ -19,12 +19,10 @@ import {
 } from "../../constants";
 
 describe("constants single point", () => {
-  it("keeps hyseed first and kb-mcp only as a compatibility fallback", () => {
-    assert.deepEqual([...EXE_NAMES], ["hyseed.exe", "kb-mcp.exe"]);
-    assert.deepEqual([...PATH_CLI_NAMES], ["hyseed", "kb-mcp"]);
-    assert.equal(PROBE_DIRS[0], ".local/bin");
-    assert.ok(PROBE_DIRS.includes(`.local/share/${DISPLAY_NAME}`));
-    assert.ok(PROBE_DIRS.includes(".local/share/kb-mcp"));
+  it("resolves only the hyseed runtime names in 0.2.0", () => {
+    assert.deepEqual([...EXE_NAMES], ["hyseed.exe"]);
+    assert.deepEqual([...PATH_CLI_NAMES], ["hyseed"]);
+    assert.deepEqual([...PROBE_DIRS], [".local/bin", `.local/share/${DISPLAY_NAME}`]);
   });
 
   it("pins the user-visible prefix and the technical ids", () => {
@@ -60,9 +58,11 @@ describe("constants single point", () => {
       assert.ok(command.title.startsWith(`${DISPLAY_NAME}:`), command.title);
     }
     assert.deepEqual(Object.keys(pkg.contributes.configuration.properties).sort(), [
+      `${CFG_SECTION}.adminHost`,
       `${CFG_SECTION}.adminPort`,
       `${CFG_SECTION}.converterPath`,
       `${CFG_SECTION}.dataRoot`,
+      `${CFG_SECTION}.mcpHost`,
       `${CFG_SECTION}.projectVault`,
       `${CFG_SECTION}.runtimePath`,
     ]);

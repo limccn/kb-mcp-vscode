@@ -4,25 +4,49 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import {
+  CFG_SECTION,
   CLI_COMMAND_IDS,
   CLI_TERMINAL_NAME,
   COMMANDS,
   LAUNCHER_VIEW_ID,
-  LEGACY_TOKEN_FILE_NAME,
   MCP_PROVIDER_ID,
   MCP_PROVIDER_LABEL,
   PANEL_PREFIX,
   TOKEN_FILE_NAME,
 } from "./constants";
-import { readConfig } from "./config";
+import { inspectCliTools, installCliTools, type CliToolsReport } from "./cliTools";
+import { onConfigChanged, readConfig, type KbMcpConfig } from "./config";
 import { resolveConverter } from "./converter";
+import { adminBaseUrl, isNonLoopback } from "./host";
+import { inspectHome, migrateHome, setDataDir } from "./homeCli";
 import { runCliCommand, type CliDeps, type TokenSource } from "./cli/flow";
 import type { CliEnv } from "./cli/quote";
 import type { CliUi } from "./cli/registry";
 import { createTerminalSender, type TerminalSender } from "./cli/terminal";
 import { SearchHistoryStore } from "./history";
 import { AdminLauncherViewProvider } from "./launcher";
+import {
+  isInitialized,
+  MigrationGate,
+  pathKey,
+  recordVersionState,
+  scanExtensionDataDirs,
+  type ConflictDecision,
+  type ConflictPrompt,
+  type LegacyCandidate,
+  type MigrationDecision,
+  type MigrationPrompt,
+  type MigrationState,
+} from "./migration";
 import { getLogChannel, logLine } from "./log";
+import { createOnboardingActions, type OnboardingActions } from "./onboarding/actions";
+import { OnboardingPanel } from "./onboarding/panel";
+import {
+  AUTO_OPEN_DELAY_MS,
+  ONBOARDED_VERSION_KEY,
+  decideOnboarding,
+  type OnboardingReason,
+} from "./onboarding/state";
 import {
   installSkillsFlow,
   removeSkillsFlow,
@@ -52,8 +76,17 @@ let manager: ServerManager | undefined;
 let statusBar: StatusBar | undefined;
 let panel: AdminPanel | undefined;
 let launcherView: AdminLauncherViewProvider | undefined;
+let migrationGate: MigrationGate | undefined;
+let onboardingPanel: OnboardingPanel | undefined;
+let onboardingActions: OnboardingActions | undefined;
 let lastRuntime: RuntimeResolution | null = null;
 let cliSender: TerminalSender | undefined;
+
+async function resolveRuntimeExe(context: vscode.ExtensionContext): Promise<string> {
+  const resolved = await resolveRuntimeFromDisk(readConfig(), context.extensionUri.fsPath);
+  lastRuntime = resolved;
+  return resolved.exePath;
+}
 
 function defaultCliSender(): TerminalSender {
   cliSender ??= createTerminalSender(() =>
@@ -85,6 +118,200 @@ export interface HyseedExtensionApi {
     cwd?: string;
     sendToTerminal?: (lines: string[]) => void;
   }): CliDeps;
+  installCliTools(options?: {
+    resourcesDir?: string;
+    targetDir?: string;
+    pathEnv?: string;
+    platform?: NodeJS.Platform;
+  }): Promise<CliToolsReport>;
+  /** Integration drill hook; throws unless the host runs in test mode. */
+  onboardingStateForTest(): {
+    open: boolean;
+    reason: OnboardingReason | null;
+    creations: number;
+    onboardedVersion: string | null;
+  };
+  /** Integration drill hook; throws unless the host runs in test mode. */
+  finishOnboardingForTest(skipped: boolean): Promise<void>;
+}
+
+function installBundledCliTools(
+  extensionPath: string,
+  overrides: {
+    resourcesDir?: string;
+    targetDir?: string;
+    pathEnv?: string;
+    platform?: NodeJS.Platform;
+  } = {}
+): Promise<CliToolsReport> {
+  return installCliTools({
+    resourcesDir: overrides.resourcesDir ?? path.join(extensionPath, "resources"),
+    targetDir: overrides.targetDir ?? path.join(os.homedir(), ".local", "bin"),
+    pathEnv: overrides.pathEnv ?? process.env.PATH ?? "",
+    platform: overrides.platform,
+  });
+}
+
+function describeCandidate(candidate: LegacyCandidate): string {
+  const documents =
+    candidate.documents === null ? "documents unreadable" : `${candidate.documents} document(s)`;
+  return `${candidate.path} (${candidate.kind}): ${candidate.vaults} vault(s), ${documents}`;
+}
+
+async function pickDataFolder(title: string): Promise<string | undefined> {
+  const picked = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    openLabel: "Use this folder",
+    title: `${PANEL_PREFIX} ${title}`,
+  });
+  return picked?.[0]?.fsPath;
+}
+
+/**
+ * Blocking legacy-data prompt. Migrate is the first (default) button; no option
+ * ever merges two roots. A dismissed prompt is treated as "not now" by the gate.
+ */
+async function decideMigration(prompt: MigrationPrompt): Promise<MigrationDecision | null> {
+  let candidate = prompt.candidates[0];
+  if (prompt.candidates.length > 1) {
+    const picked = await vscode.window.showQuickPick(
+      prompt.candidates.map((item, index) => ({
+        label: describeCandidate(item),
+        description: index === 0 ? "newest" : undefined,
+        candidate: item,
+      })),
+      { placeHolder: "Legacy hyseed data found — choose the folder to bring forward" }
+    );
+    if (!picked) return null;
+    candidate = picked.candidate;
+  }
+  const detail = [
+    `Source: ${describeCandidate(candidate)}`,
+    `Current data folder: ${prompt.dataRoot}`,
+    "",
+    "Migrate moves the old vaults into the current data folder; the old location is removed when both are on the same volume.",
+    "Use existing only points the config at the old folder; nothing is moved.",
+  ].join("\n");
+  const choice = await vscode.window.showWarningMessage(
+    `${PANEL_PREFIX} Legacy hyseed data was found`,
+    { modal: true, detail },
+    "Migrate",
+    "Use existing",
+    "Choose folder…",
+    "Not now"
+  );
+  if (choice === "Migrate") return { action: "migrate", candidate };
+  if (choice === "Use existing") return { action: "use", candidate };
+  if (choice === "Choose folder…") {
+    const folder = await pickDataFolder("Choose the data folder to use");
+    return folder ? { action: "choose-folder", path: folder } : null;
+  }
+  return { action: "not-now" };
+}
+
+/** Both roots hold data: nothing is merged or overwritten; the user picks one. */
+async function decideConflict(prompt: ConflictPrompt): Promise<ConflictDecision | null> {
+  const detail = [
+    `Current: ${prompt.dataRoot}`,
+    `Old: ${prompt.source}`,
+    "",
+    "No data is merged or overwritten. The chosen folder becomes the data root.",
+  ].join("\n");
+  const choice = await vscode.window.showWarningMessage(
+    `${PANEL_PREFIX} Both data folders already hold data`,
+    { modal: true, detail },
+    "Keep current",
+    "Use the old folder",
+    "Choose folder…"
+  );
+  if (choice === "Keep current") return { action: "keep" };
+  if (choice === "Use the old folder") {
+    const source = pathKey(prompt.source);
+    const candidate =
+      prompt.candidates.find((item) => pathKey(item.path) === source) ?? prompt.candidates[0];
+    return candidate ? { action: "use", candidate } : { action: "cancel" };
+  }
+  if (choice === "Choose folder…") {
+    const folder = await pickDataFolder("Choose the data folder to use");
+    return folder ? { action: "choose-folder", path: folder } : null;
+  }
+  return { action: "cancel" };
+}
+
+function createMigrationGate(context: vscode.ExtensionContext): MigrationGate {
+  return new MigrationGate({
+    dataRoot: () => readConfig().dataRoot,
+    inspect: async (dataRoot) => inspectHome(await resolveRuntimeExe(context), dataRoot, { env: process.env }),
+    scanExtensionDataDirs: () =>
+      scanExtensionDataDirs({ home: os.homedir(), extensionId: context.extension.id }),
+    isInitialized,
+    decide: decideMigration,
+    decideConflict,
+    migrate: async (from, to) => migrateHome(await resolveRuntimeExe(context), from, to, { env: process.env }),
+    setDataDir: async (target) => setDataDir(await resolveRuntimeExe(context), target, { env: process.env }),
+    log: logLine,
+    notifyError(message) {
+      logLine(message);
+      void vscode.window
+        .showErrorMessage(`${PANEL_PREFIX} ${message}`, "Show logs", "Setup data folder")
+        .then((choice) => {
+          if (choice === "Show logs") getLogChannel().show();
+          else if (choice === "Setup data folder") {
+            void vscode.commands.executeCommand(COMMANDS.resumeMigration);
+          }
+        });
+    },
+    onState(state: MigrationState) {
+      logLine(
+        `migration gate: ${state.kind}` +
+          (state.kind === "pending" ? ` (${state.reason})` : "")
+      );
+      launcherView?.updateSetupState(state);
+    },
+    onDataRootChanged() {
+      const cfg = readConfig();
+      logLine(`migration gate: data folder is now ${cfg.dataRoot}`);
+      statusBar?.update(manager!.getStatus(), {
+        runtimePath: lastRuntime?.exePath,
+        dataRoot: cfg.dataRoot,
+      });
+      launcherView?.updateSetupState({ kind: "ready", dataRoot: cfg.dataRoot });
+      if (manager?.getStatus().state === "running-own") {
+        void manager.restart().catch((err: unknown) => {
+          logLine(`restart after migration failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+    },
+  });
+}
+
+/**
+ * Doctor follow-up: `hyseed doctor` keeps its terminal output, but an
+ * uninitialised data root (or legacy candidates) also earns an entry point
+ * into the setup guide. Any inspection failure stays silent.
+ */
+async function checkDataFolderAfterDoctor(context: vscode.ExtensionContext): Promise<void> {
+  try {
+    const report = await inspectHome(await resolveRuntimeExe(context), readConfig().dataRoot, {
+      env: process.env,
+    });
+    if (report.initialized && report.candidates.length === 0) return;
+    // Never await a notification in a command path: the headless test host
+    // never resolves it. The check is fire-and-forget by design.
+    void vscode.window
+      .showWarningMessage(`${PANEL_PREFIX} data folder needs attention`, "Open setup guide")
+      .then((choice) => {
+        if (choice === "Open setup guide") {
+          void vscode.commands.executeCommand(COMMANDS.openSetupGuide);
+        }
+      });
+  } catch (error) {
+    logLine(
+      `doctor data-folder check skipped: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
 export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
@@ -100,6 +327,10 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
     return resolved;
   };
   ops.resolveConverter = (runtime) => converterFor(context, runtime.exePath);
+  ops.warnAdminHost = (host) => warnAdminBinding(host, context.extension.id);
+  const initialConfig = readConfig();
+  let lastAdminHost = initialConfig.adminHost;
+  warnHostBindings(initialConfig, context.extension.id);
 
   manager = new ServerManager(ops, (status) => {
     statusBar?.update(status, {
@@ -109,12 +340,156 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
     panel?.update({ status, dataRoot: readConfig().dataRoot, runtime: lastRuntime });
     launcherView?.updateStatus(status);
     logLine(
-      `status: ${status.state}${status.port !== null ? ` port=${status.port}` : ""}` +
+      `status: ${status.state}` +
+        (status.port !== null ? ` host=${status.host ?? "127.0.0.1"} port=${status.port}` : "") +
         (status.message ? ` (${status.message})` : "")
     );
   });
   context.subscriptions.push({ dispose: () => manager?.dispose() });
   statusBar.update(manager.getStatus(), { dataRoot: readConfig().dataRoot });
+
+  // Migration gate: an upgrade must not scaffold an empty data root over (or
+  // instead of) an old one. Start now; ensureRunning() waits for the decision.
+  const gate = createMigrationGate(context);
+  migrationGate = gate;
+  const currentVersion = String(context.extension.packageJSON?.version ?? "0.0.0");
+  const versionState = recordVersionState(context.globalState, currentVersion);
+  logLine(
+    `version state: current=${versionState.current} previous=${versionState.previous ?? "(none)"}` +
+      `${versionState.firstInstall ? " first-install" : ""}${versionState.majorMinorUpgrade ? " major-minor-upgrade" : ""}`
+  );
+  void gate.decide();
+
+  const ensureReady = async (m: ServerManager) => {
+    await gate.wait();
+    return m.ensureRunning();
+  };
+
+  const settingDataRoot = (): string =>
+    vscode.workspace.getConfiguration(CFG_SECTION).get<string>("dataRoot") ?? "";
+
+  onboardingActions = createOnboardingActions({
+    version: currentVersion,
+    home: os.homedir(),
+    env: process.env,
+    readConfig,
+    settingDataRoot,
+    resolveExe: () => resolveRuntimeExe(context),
+    run(exe, args, cwd, timeoutMs) {
+      const cfg = readConfig();
+      const env: NodeJS.ProcessEnv = { ...process.env };
+      if (cfg.dataRoot) env.KB_MCP_HOME = cfg.dataRoot;
+      return runSkillsCli(exe, args, { cwd, env, timeoutMs });
+    },
+    inspectHome: async (dataRoot) =>
+      inspectHome(await resolveRuntimeExe(context), dataRoot, { env: process.env }),
+    setDataDir: async (target) => setDataDir(await resolveRuntimeExe(context), target, { env: process.env }),
+    installCliTools: () => installBundledCliTools(context.extensionUri.fsPath),
+    inspectCliTools: () =>
+      inspectCliTools({
+        resourcesDir: path.join(context.extensionUri.fsPath, "resources"),
+        targetDir: path.join(os.homedir(), ".local", "bin"),
+        pathEnv: process.env.PATH ?? "",
+      }),
+    installAgentSkills: () => installSkillsFlow(buildSkillsUi(), createSkillsDeps(context)),
+    pickDataFolder: () => pickDataFolder("Choose the data folder"),
+    openSettings: async () => {
+      await vscode.commands.executeCommand(
+        "workbench.action.openSettings",
+        `${CFG_SECTION}.dataRoot`
+      );
+    },
+    gate: {
+      state: () => gate.state(),
+      retry: () => gate.retry(),
+      release: () => gate.release(),
+    },
+    ensureRunning: async () => {
+      if (manager) await manager.ensureRunning();
+    },
+    confirm: async (title, detail) => {
+      const choice = await vscode.window.showWarningMessage(
+        `${PANEL_PREFIX} ${title}`,
+        { modal: true, detail },
+        "Continue"
+      );
+      return choice === "Continue";
+    },
+    notify(level, message) {
+      logLine(`onboarding: ${message}`);
+      onboardingPanel?.notice(level, message);
+    },
+    log: logLine,
+    markOnboarded: async () => {
+      await context.globalState.update(ONBOARDED_VERSION_KEY, currentVersion);
+    },
+  });
+
+  onboardingPanel = new OnboardingPanel({
+    actions: onboardingActions,
+    version: currentVersion,
+    log: logLine,
+  });
+  context.subscriptions.push(onboardingPanel);
+
+  const openSetupGuide = (reason: OnboardingReason): void => {
+    try {
+      onboardingPanel?.show(reason);
+    } catch (error) {
+      logLine(`onboarding: could not open the setup guide: ${String(error)}`);
+    }
+  };
+
+  // First-run / major-upgrade guide: waits for the migration gate to settle so
+  // the blocking migration prompt always comes first, then opens asynchronously.
+  // It never blocks activation.
+  void gate
+    .whenSettled()
+    .then(() => {
+      const decision = decideOnboarding({
+        current: currentVersion,
+        onboarded: context.globalState.get<string>(ONBOARDED_VERSION_KEY),
+        firstInstall: versionState.firstInstall,
+      });
+      if (!decision.open) return;
+      const timer = setTimeout(() => {
+        // A manual open+finish during the delay must not pop the guide again.
+        const now = decideOnboarding({
+          current: currentVersion,
+          onboarded: context.globalState.get<string>(ONBOARDED_VERSION_KEY),
+          firstInstall: versionState.firstInstall,
+        });
+        if (now.open) openSetupGuide(now.reason);
+      }, AUTO_OPEN_DELAY_MS);
+      timer.unref?.();
+      context.subscriptions.push({ dispose: () => clearTimeout(timer) });
+    })
+    .catch((error: unknown) => logLine(`onboarding: auto-open skipped: ${String(error)}`));
+
+  context.subscriptions.push(
+    onConfigChanged(() => {
+      const cfg = readConfig();
+      warnHostBindings(cfg, context.extension.id);
+      if (cfg.adminHost !== lastAdminHost && manager?.getStatus().state === "running-own") {
+        const previous = lastAdminHost;
+        void vscode.window
+          .showInformationMessage(
+            `${PANEL_PREFIX} admin host changed from ${previous} to ${cfg.adminHost}; restart the admin server to apply it.`,
+            "Restart"
+          )
+          .then((choice) => {
+            if (choice === "Restart" && manager) {
+              void manager.restart().catch((err: unknown) => {
+                const message = err instanceof Error ? err.message : String(err);
+                logLine(message);
+                void vscode.window.showErrorMessage(`${PANEL_PREFIX} ${message}`);
+              });
+            }
+          });
+      }
+      lastAdminHost = cfg.adminHost;
+    })
+  );
 
   const mcpProvider = registerMcpProvider(context.extensionUri.fsPath, context.subscriptions);
 
@@ -144,15 +519,19 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
   };
 
   context.subscriptions.push(
+    vscode.commands.registerCommand(COMMANDS.resumeMigration, () => {
+      void gate.retry().catch((err: unknown) => logLine(`migration gate retry failed: ${String(err)}`));
+    }),
+    vscode.commands.registerCommand(COMMANDS.openSetupGuide, () => openSetupGuide("manual")),
     vscode.commands.registerCommand(COMMANDS.openAdmin, () =>
       run(async (m) => {
-        const status = await m.ensureRunning();
+        const status = await ensureReady(m);
         panel?.show({ status, dataRoot: readConfig().dataRoot, runtime: lastRuntime });
       })
     ),
     vscode.commands.registerCommand(COMMANDS.startServer, () =>
       run(async (m) => {
-        const status = await m.ensureRunning();
+        const status = await ensureReady(m);
         void vscode.window.showInformationMessage(
           `${PANEL_PREFIX} server ${status.state}` +
             (status.port !== null ? ` on port ${status.port}` : "")
@@ -167,6 +546,7 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
     ),
     vscode.commands.registerCommand(COMMANDS.restartServer, () =>
       run(async (m) => {
+        await gate.wait();
         const status = await m.restart();
         void vscode.window.showInformationMessage(
           `${PANEL_PREFIX} server ${status.state}` +
@@ -176,11 +556,12 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
     ),
     vscode.commands.registerCommand(COMMANDS.openInBrowser, () =>
       run(async (m) => {
-        const status = await m.ensureRunning();
-        if (status.port === null) {
+        const status = await ensureReady(m);
+        const base = adminBaseUrl(status);
+        if (base === null) {
           throw new Error("server is not running");
         }
-        await vscode.env.openExternal(vscode.Uri.parse(`http://127.0.0.1:${status.port}/`));
+        await vscode.env.openExternal(vscode.Uri.parse(`${base}/`));
       })
     ),
     vscode.commands.registerCommand(COMMANDS.showLogs, () => {
@@ -238,6 +619,50 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
         `${PANEL_PREFIX} MCP provider ${mcpProvider.registered ? "registered" : "unavailable"} — see output`
       );
     }),
+    vscode.commands.registerCommand(COMMANDS.installCliTools, async () => {
+      try {
+        const report = await installBundledCliTools(context.extensionUri.fsPath);
+        const count = (action: string) =>
+          report.results.filter((result) => result.action === action).length;
+        const leftovers = report.results
+          .map((result) => result.leftover)
+          .filter((leftover): leftover is string => leftover !== null);
+        for (const result of report.results) {
+          logLine(
+            `cli tools: ${result.action} ${result.name} -> ${result.target}` +
+              (result.leftover
+                ? ` (left ${result.leftover}; it is in use and can be deleted later)`
+                : "")
+          );
+        }
+        logLine(`cli tools: ${report.pathHint}`);
+        const summary =
+          `${PANEL_PREFIX} CLI tools in ${report.targetDir}: ` +
+          `installed ${count("installed")}, replaced ${count("replaced")}, kept ${count("kept")}. ` +
+          "The extension resolves hyseed from this directory; these bytes match the bundled VSIX.";
+        const details =
+          report.pathHint + (leftovers.length > 0 ? ` Leftovers: ${leftovers.join(", ")}` : "");
+        if (report.pathContainsTarget) {
+          void vscode.window
+            .showInformationMessage(`${summary} ${details}`, "Show details")
+            .then((choice) => {
+              if (choice === "Show details") getLogChannel().show();
+            });
+        } else {
+          void vscode.window
+            .showWarningMessage(`${summary} ${details}`, "Show details")
+            .then((choice) => {
+              if (choice === "Show details") getLogChannel().show();
+            });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logLine(message);
+        void vscode.window.showErrorMessage(
+          `${PANEL_PREFIX} install CLI tools failed: ${message}`
+        );
+      }
+    }),
     vscode.commands.registerCommand(
       COMMANDS.installAgentSkills,
       runFlow(buildSkillsUi, () => createSkillsDeps(context), installSkillsFlow)
@@ -269,7 +694,12 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
     ...CLI_COMMAND_IDS.map((id) =>
       vscode.commands.registerCommand(
         id,
-        runFlow(buildCliUi, () => createCliDeps(context), (ui, deps) => runCliCommand(id, ui, deps))
+        runFlow(buildCliUi, () => createCliDeps(context), async (ui, deps) => {
+          await runCliCommand(id, ui, deps);
+          // Doctor keeps its terminal output; this only adds the setup-guide
+          // entry point when the data folder needs attention.
+          if (id === COMMANDS.cliDoctor) await checkDataFolderAfterDoctor(context);
+        })
       )
     ),
     vscode.window.onDidCloseTerminal((terminal) => cliSender?.reset(terminal))
@@ -278,8 +708,9 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
   // Sidebar panel: vault search plus grouped actions. It starts the admin server on demand.
   launcherView = new AdminLauncherViewProvider({
     extensionId: context.extension.id,
-    ensureRunning: () => manager!.ensureRunning(),
+    ensureRunning: () => ensureReady(manager!),
     getStatus: () => manager!.getStatus(),
+    getSetupState: () => migrationGate?.state() ?? null,
     history: new SearchHistoryStore(context.globalState),
     mcp: mcpProvider,
   });
@@ -301,6 +732,28 @@ export function activate(context: vscode.ExtensionContext): HyseedExtensionApi {
     runCliCommand,
     cliCommandIds: CLI_COMMAND_IDS,
     createCliDeps: (overrides) => createCliDeps(context, overrides),
+    installCliTools: (overrides) => installBundledCliTools(context.extensionUri.fsPath, overrides),
+    onboardingStateForTest: () => {
+      if (context.extensionMode !== vscode.ExtensionMode.Test) {
+        throw new Error("onboarding test hooks are only available in test mode");
+      }
+      const snapshot = onboardingPanel?.snapshotForTest() ?? {
+        open: false,
+        reason: null as OnboardingReason | null,
+        creations: 0,
+      };
+      return {
+        ...snapshot,
+        onboardedVersion: context.globalState.get<string>(ONBOARDED_VERSION_KEY) ?? null,
+      };
+    },
+    finishOnboardingForTest: async (skipped) => {
+      if (context.extensionMode !== vscode.ExtensionMode.Test) {
+        throw new Error("onboarding test hooks are only available in test mode");
+      }
+      if (onboardingActions) await onboardingActions.finish(skipped, { cli: false, mcp: false });
+      onboardingPanel?.dispose();
+    },
   };
 }
 
@@ -533,8 +986,7 @@ function buildCliUi(): CliUi {
 function tokenSource(env: NodeJS.ProcessEnv): TokenSource {
   const home = env.USERPROFILE || env.HOME || os.homedir();
   return {
-    newFile: path.join(home, TOKEN_FILE_NAME),
-    legacyFile: path.join(home, LEGACY_TOKEN_FILE_NAME),
+    file: path.join(home, TOKEN_FILE_NAME),
     read(file) {
       try {
         const value = fs.readFileSync(file, "utf8").trim();
@@ -587,8 +1039,42 @@ export function createCliDeps(
       const cfg = readConfig();
       return { KB_MCP_HOME: cfg.dataRoot || undefined, KB_MCP_VAULT: cfg.projectVault || undefined };
     },
+    mcpHost: () => readConfig().mcpHost,
     log: logLine,
   };
+}
+
+const warnedHosts = new Set<string>();
+
+/** Warn once per session for each non-loopback binding; never blocks activation. */
+function warnHostBindings(cfg: KbMcpConfig, extensionId: string): void {
+  warnAdminBinding(cfg.adminHost, extensionId);
+  if (isNonLoopback(cfg.mcpHost)) {
+    warnOnce(
+      `mcp:${cfg.mcpHost}`,
+      `${PANEL_PREFIX} MCP HTTP transport is bound to ${cfg.mcpHost}; set KB_MCP_HTTP_TOKEN and allow the port through the firewall.`,
+      extensionId
+    );
+  }
+}
+
+function warnAdminBinding(host: string, extensionId: string): void {
+  if (!isNonLoopback(host)) return;
+  warnOnce(
+    `admin:${host}`,
+    `${PANEL_PREFIX} admin console is bound to ${host} and has no authentication: anyone who can reach this address can read and modify the knowledge base.`,
+    extensionId
+  );
+}
+
+function warnOnce(key: string, message: string, extensionId: string): void {
+  if (warnedHosts.has(key)) return;
+  warnedHosts.add(key);
+  void vscode.window.showWarningMessage(message, "Open settings").then((choice) => {
+    if (choice === "Open settings") {
+      void vscode.commands.executeCommand("workbench.action.openSettings", `@ext:${extensionId}`);
+    }
+  });
 }
 
 export function deactivate(): void {}

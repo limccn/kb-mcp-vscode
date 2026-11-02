@@ -2,17 +2,9 @@
   "name": "kbmcp-vscode",
   "displayName": "hyseed",
   "description": "hyseed (formerly kb-mcp) local knowledge base inside VS Code: admin console, MCP/skills setup, vaults, and CLI commands.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "limccn",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/limccn/kb-mcp-vscode.git"
-  },
-  "bugs": {
-    "url": "https://github.com/limccn/kb-mcp-vscode/issues"
-  },
-  "homepage": "https://github.com/limccn/kb-mcp-vscode#readme",
   "icon": "resources/icon.png",
   "engines": {
     "vscode": "^1.101.0"
@@ -73,6 +65,10 @@
         "title": "hyseed: Install agent skills"
       },
       {
+        "command": "kbmcp.installCliTools",
+        "title": "hyseed: Install CLI tools"
+      },
+      {
         "command": "kbmcp.removeAgentSkills",
         "title": "hyseed: Remove agent skills"
       },
@@ -95,6 +91,14 @@
       {
         "command": "kbmcp.listVaults",
         "title": "hyseed: List vaults"
+      },
+      {
+        "command": "kbmcp.resumeMigration",
+        "title": "hyseed: Setup data folder"
+      },
+      {
+        "command": "kbmcp.openSetupGuide",
+        "title": "hyseed: Setup guide"
       },
       {
         "command": "kbmcp.cli.search",
@@ -200,10 +204,22 @@
           "default": 51888,
           "description": "Preferred port for the admin console. Falls back to the next free port when occupied."
         },
+        "kbMcp.adminHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "scope": "machine",
+          "description": "Interface the admin console binds to (admin start --host). The console has no authentication: only use a non-loopback value on a trusted network. Invalid values fall back to 127.0.0.1."
+        },
+        "kbMcp.mcpHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "scope": "machine",
+          "description": "Interface for hyseed serve --transport http (MCP HTTP). A non-loopback value requires KB_MCP_HTTP_TOKEN and a firewall rule for the port."
+        },
         "kbMcp.dataRoot": {
           "type": "string",
           "default": "",
-          "description": "Explicit data root (sets KB_MCP_HOME for the spawned server). Empty = let the runtime resolve it."
+          "description": "Explicit data root (sets KB_MCP_HOME for every hyseed child). Empty = the stable per-user default (%USERPROFILE%\\.local\\share\\hyseed on Windows)."
         },
         "kbMcp.projectVault": {
           "type": "string",

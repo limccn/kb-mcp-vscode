@@ -43,6 +43,8 @@ export interface HttpJsonOptions {
   method?: "GET" | "POST";
   body?: unknown;
   timeoutMs?: number;
+  /** Admin server address; defaults to loopback. */
+  host?: string;
 }
 
 export type HttpJson = <T>(port: number, path: string, options?: HttpJsonOptions) => Promise<T>;
@@ -69,14 +71,14 @@ export function searchPath(params: SearchParams): string {
   return `/api/search?${search.toString()}`;
 }
 
-/** Minimal JSON client for the loopback admin server. */
+/** Minimal JSON client for the admin server. */
 export function httpJson<T>(port: number, path: string, options: HttpJsonOptions = {}): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const method = options.method ?? "GET";
     const payload = options.body === undefined ? null : JSON.stringify(options.body);
     const req = request(
       {
-        host: "127.0.0.1",
+        host: options.host ?? "127.0.0.1",
         port,
         path,
         method,

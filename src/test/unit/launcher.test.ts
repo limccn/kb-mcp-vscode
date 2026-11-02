@@ -77,15 +77,30 @@ describe("launcher webview", () => {
     assert.ok(html.includes('aria-controls="filters"'));
   });
 
+  it("shows the setup-required banner with a command link", () => {
+    for (const id of ["setup-banner", "setup-text", "setup-action"]) {
+      assert.ok(html.includes(`id="${id}"`), id);
+    }
+    assert.ok(/<div id="setup-banner"[^>]* hidden>/.test(html));
+    assert.ok(html.includes("Data folder setup required"));
+    assert.ok(html.includes(`href="command:${COMMANDS.resumeMigration}"`));
+    assert.ok(html.includes('message.type === "setup"'));
+    assert.ok(html.includes('setupRequired && !serverRunning'));
+    // A running/external server wins: the banner is hidden whenever it runs.
+    assert.ok(html.includes("setupBanner.hidden = !setupActive"));
+  });
+
   it("shows start/running or the external host and port", () => {
     assert.ok(html.includes('if (state === "running-own") label = "running"'));
-    assert.ok(html.includes('else if (state === "running-external") label = "127.0.0.1"'));
+    assert.ok(
+      html.includes('label = displayHost(status.host) + (status.port ? ":" + status.port : "")')
+    );
     assert.ok(html.includes('else if (state === "stopped") label = "start"'));
     assert.ok(!html.includes('? "external" : state'));
   });
 
   it("offers the grouped action menu", () => {
-    for (const group of ["admin", "mcp", "ingest", "git", "more"]) {
+    for (const group of ["admin", "mcp", "ingest", "backup", "git", "more"]) {
       assert.ok(html.includes(`data-group="${group}"`), group);
     }
     for (const id of [
@@ -100,8 +115,12 @@ describe("launcher webview", () => {
       "menu-upload-folder",
       "menu-progress",
       "menu-jobs-badge",
+      "menu-export",
+      "menu-import",
       "menu-git",
       "menu-install-skills",
+      "menu-install-cli-tools",
+      "menu-setup-guide",
       "menu-skills-state",
       "menu-doctor",
       "menu-logs",
@@ -116,14 +135,49 @@ describe("launcher webview", () => {
       COMMANDS.openInBrowser,
       COMMANDS.showMcpStatus,
       COMMANDS.installAgentSkills,
+      COMMANDS.installCliTools,
+      COMMANDS.openSetupGuide,
       COMMANDS.showSkillsState,
       COMMANDS.cliDoctor,
       COMMANDS.showLogs,
       COMMANDS.showRuntimeInfo,
+      COMMANDS.cliExport,
+      COMMANDS.cliImport,
     ]) {
       assert.ok(html.includes(`command:${command}`), command);
     }
     assert.ok(!html.includes(`command:${COMMANDS.openAdmin}`));
+    const skillsAt = html.indexOf('id="menu-install-skills"');
+    const toolsAt = html.indexOf('id="menu-install-cli-tools"');
+    assert.ok(skillsAt >= 0 && toolsAt > skillsAt, "Install CLI tools follows Install MCP & skills");
+    assert.ok(html.slice(toolsAt, html.indexOf(">", toolsAt)).includes('data-group="more"'));
+    const guideAt = html.indexOf('id="menu-setup-guide"');
+    assert.ok(guideAt > toolsAt, "Setup guide follows Install CLI tools");
+    assert.ok(html.slice(guideAt, html.indexOf(">", guideAt)).includes('data-group="more"'));
+    const progressAt = html.indexOf('id="menu-progress"');
+    const exportAt = html.indexOf('id="menu-export"');
+    const importAt = html.indexOf('id="menu-import"');
+    const gitAt = html.indexOf('id="menu-git"');
+    assert.ok(progressAt >= 0 && exportAt > progressAt, "Backup follows the Knowledge base group");
+    assert.ok(importAt > exportAt, "Import follows Export");
+    assert.ok(gitAt > importAt, "Git follows the Backup group");
+    for (const id of ["menu-export", "menu-import"]) {
+      const at = html.indexOf(`id="${id}"`);
+      const openingTag = html.slice(at, html.indexOf(">", at));
+      assert.ok(openingTag.includes('data-group="backup"'), id);
+      assert.ok(openingTag.includes('role="menuitem"'), id);
+    }
+    assert.ok(
+      html.slice(exportAt, html.indexOf(">", exportAt)).includes(`command:${COMMANDS.cliExport}`)
+    );
+    assert.ok(
+      html.slice(importAt, html.indexOf(">", importAt)).includes(`command:${COMMANDS.cliImport}`)
+    );
+    assert.ok(html.includes(">Export backup (Markdown)…<"));
+    assert.ok(html.includes(">Import backup (Markdown)…<"));
+    assert.ok(html.includes('title="Export all documents as Markdown"'));
+    assert.ok(html.includes('title="Import Markdown files into the knowledge base"'));
+    assert.equal((html.match(/data-group="backup"/g) ?? []).length, 2);
   });
 
   it("keeps the simplified groups free of native Git and MCP lifecycle", () => {
@@ -165,9 +219,42 @@ describe("launcher webview", () => {
       "openIngestPage",
       "forgetQuery",
       "clearHistory",
+      "copyText",
+      "copyDocumentLink",
     ]) {
       assert.ok(html.includes(`type: "${type}"`), type);
     }
+  });
+
+  it("offers a custom context menu for search results", () => {
+    assert.ok(html.includes('id="hitmenu"'));
+    assert.ok(html.includes('resultsEl.addEventListener("contextmenu"'));
+    for (const action of [
+      "open",
+      "copy-title",
+      "copy-id",
+      "copy-snippet",
+      "copy-link",
+      "copy-selection",
+    ]) {
+      assert.ok(html.includes(`data-action="${action}"`), action);
+    }
+    assert.ok(html.includes('"Search result actions"'));
+    assert.ok(html.includes("hitMenuSelection"));
+  });
+
+  it("renders snippet segments with a show-more toggle", () => {
+    assert.ok(html.includes("function appendSegments"));
+    assert.ok(html.includes("hit.snippetView"));
+    assert.ok(html.includes('"Show more"'));
+    assert.ok(html.includes('"Show less"'));
+    assert.ok(html.includes("-webkit-line-clamp: 3"));
+    assert.ok(html.includes("max-height: 13.5em"));
+    assert.ok(html.includes(".snippet-actions"));
+    assert.ok(html.includes("justify-content: flex-end"));
+    assert.ok(html.includes("actions.appendChild(toggle)"));
+    assert.ok(html.includes("createElement(\"strong\")"));
+    assert.ok(!html.includes("innerHTML"));
   });
 
   it("handles host messages for status, history, jobs and errors", () => {
@@ -179,11 +266,13 @@ describe("launcher webview", () => {
       "history",
       "results",
       "refreshed",
+      "notice",
       "ingestProgress",
       "ingestResult",
       "jobs",
       "jobsOpen",
       "error",
+      "setup",
     ]) {
       assert.ok(html.includes(`message.type === "${type}"`), type);
     }
@@ -197,5 +286,13 @@ describe("launcher webview", () => {
       documentUrl(1234, "notes/2026 plan"),
       "http://127.0.0.1:1234/documents/notes/2026%20plan"
     );
+  });
+
+  it("brackets IPv6 hosts and maps wildcards in document URLs", () => {
+    assert.equal(
+      documentUrl(1234, "notes/a b", "::1"),
+      "http://[::1]:1234/documents/notes/a%20b"
+    );
+    assert.equal(documentUrl(1234, "x", "0.0.0.0"), "http://127.0.0.1:1234/documents/x");
   });
 });

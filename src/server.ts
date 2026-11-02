@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
+import { stat } from "node:fs/promises";
 import { request } from "node:http";
 import { connect } from "node:net";
 import { dirname } from "node:path";
 import {
+  ADMIN_HOST_PROBE_TIMEOUT_MS,
   HTTP_PROBE_TIMEOUT_MS,
   PORT_RELEASE_TIMEOUT_MS,
   SCAN_PORT_LIMIT,
@@ -10,6 +12,7 @@ import {
   SERVER_START_TIMEOUT_MS,
 } from "./constants";
 import { readConfig, type KbMcpConfig } from "./config";
+import { connectHost, DEFAULT_HOST } from "./host";
 import type { RuntimeResolution } from "./runtime";
 import { resolveRuntimeFromDisk } from "./runtime";
 import { logLine } from "./log";
@@ -25,6 +28,8 @@ export type ServerState =
 export interface ServerStatus {
   state: ServerState;
   port: number | null;
+  /** Listen address; absent on older literals means the loopback default. */
+  host?: string | null;
   message: string | null;
 }
 
@@ -40,19 +45,24 @@ export interface ServerOps {
   resolveRuntime(): Promise<RuntimeResolution>;
   readConfig(): KbMcpConfig;
   spawnServer(exePath: string, args: string[], env: NodeJS.ProcessEnv, cwd: string): ServerChild;
-  isPortOpen(port: number): Promise<boolean>;
-  probeAdminPage(port: number): Promise<"closed" | "ours" | "other">;
-  waitForPortOpen(port: number, timeoutMs: number): Promise<boolean>;
-  waitForPortClosed(port: number, timeoutMs: number): Promise<boolean>;
-  findFreePort(preferred: number): Promise<number>;
+  isPortOpen(host: string, port: number): Promise<boolean>;
+  probeAdminPage(host: string, port: number): Promise<"closed" | "ours" | "other">;
+  waitForPortOpen(host: string, port: number, timeoutMs: number): Promise<boolean>;
+  waitForPortClosed(host: string, port: number, timeoutMs: number): Promise<boolean>;
+  findFreePort(host: string, preferred: number): Promise<number>;
   killTree(pid: number): Promise<void>;
   /** Optional: explicit or auto-discovered document converter for ingest. */
   resolveConverter?(runtime: RuntimeResolution): string | undefined;
+  /** Optional: probes `admin start --help`; only called for a non-default host. */
+  supportsAdminHost?(exePath: string): Promise<boolean>;
+  /** Optional: fires for a non-default admin host before every spawn. */
+  warnAdminHost?(host: string): void;
 }
 
 export class ServerManager {
   private state: ServerState = "stopped";
   private port: number | null = null;
+  private host: string = DEFAULT_HOST;
   private message: string | null = null;
   private child: ServerChild | null = null;
   private startPromise: Promise<ServerStatus> | null = null;
@@ -64,7 +74,7 @@ export class ServerManager {
   ) {}
 
   getStatus(): ServerStatus {
-    return { state: this.state, port: this.port, message: this.message };
+    return { state: this.state, port: this.port, host: this.host, message: this.message };
   }
 
   async ensureRunning(): Promise<ServerStatus> {
@@ -87,20 +97,40 @@ export class ServerManager {
       logLine(`ensureRunning: runtime=${runtime.exePath} (${runtime.version})`);
       const config = this.ops.readConfig();
       const preferred = config.adminPort;
+      const listen = config.adminHost || DEFAULT_HOST;
+      const connect = connectHost(listen);
+      const customHost = listen !== DEFAULT_HOST;
+      this.host = listen;
+      if (customHost) this.ops.warnAdminHost?.(listen);
 
       let port = preferred;
-      if (await this.ops.isPortOpen(preferred)) {
-        const page = await this.ops.probeAdminPage(preferred);
+      if (await this.ops.isPortOpen(connect, preferred)) {
+        const page = await this.ops.probeAdminPage(connect, preferred);
         logLine(`ensureRunning: preferred port ${preferred} page=${page}`);
         if (page === "ours") {
           this.setStatus("running-external", preferred, "reusing an existing admin instance");
           return this.getStatus();
         }
-        port = await this.ops.findFreePort(preferred);
+        port = await this.ops.findFreePort(connect, preferred);
+      } else if (customHost && (await this.ops.isPortOpen(DEFAULT_HOST, preferred))) {
+        logLine(
+          `ensureRunning: an admin instance listens on ${DEFAULT_HOST}:${preferred}; ` +
+            `not reusing it because kbMcp.adminHost is ${listen}`
+        );
       }
 
       if (this.disposed) {
         throw new Error("server manager was disposed during startup");
+      }
+      if (customHost && this.ops.supportsAdminHost) {
+        const supported = await this.ops.supportsAdminHost(runtime.exePath);
+        logLine(`ensureRunning: admin --host support=${supported}`);
+        if (!supported) {
+          throw new Error(
+            `runtime ${runtime.exePath} does not support 'admin start --host'; ` +
+              `update hyseed or set kbMcp.adminHost to ${DEFAULT_HOST}`
+          );
+        }
       }
       const converter = this.ops.resolveConverter?.(runtime);
       const env: NodeJS.ProcessEnv = {
@@ -109,10 +139,13 @@ export class ServerManager {
         ...(converter ? { KB_INGEST_CONVERTER: converter } : {}),
       };
       this.setStatus("starting", port, null);
-      logLine(`starting server: ${runtime.exePath} admin start --port ${port}`);
+      const args = customHost
+        ? ["admin", "start", "--host", listen, "--port", String(port)]
+        : ["admin", "start", "--port", String(port)];
+      logLine(`starting server: ${runtime.exePath} ${args.join(" ")}`);
       const child = this.ops.spawnServer(
         runtime.exePath,
-        ["admin", "start", "--port", String(port)],
+        args,
         env,
         dirname(runtime.exePath)
       );
@@ -137,14 +170,14 @@ export class ServerManager {
 
       logLine(`ensureRunning: waiting for port ${port} to open`);
       const opened = await Promise.race([
-        this.ops.waitForPortOpen(port, SERVER_START_TIMEOUT_MS),
+        this.ops.waitForPortOpen(connect, port, SERVER_START_TIMEOUT_MS),
         exitDuringStartup,
       ]);
       logLine(`ensureRunning: port ${port} open=${opened}`);
       if (!opened) {
         throw new Error(`server did not open port ${port} within ${SERVER_START_TIMEOUT_MS}ms`);
       }
-      const page = await this.ops.probeAdminPage(port);
+      const page = await this.ops.probeAdminPage(connect, port);
       logLine(`ensureRunning: admin page probe=${page}`);
       if (page === "closed") {
         throw new Error(`server closed port ${port} during startup`);
@@ -200,7 +233,10 @@ export class ServerManager {
     }
     this.child = null;
 
-    const closed = port === null ? true : await this.ops.waitForPortClosed(port, PORT_RELEASE_TIMEOUT_MS);
+    const closed =
+      port === null
+        ? true
+        : await this.ops.waitForPortClosed(connectHost(this.host), port, PORT_RELEASE_TIMEOUT_MS);
     if (!closed) {
       const hint =
         pid !== undefined ? ` (pid ${pid}); try: taskkill /PID ${pid} /T /F` : "";
@@ -257,9 +293,9 @@ export async function findFreePort(
   throw new Error(`no free port found in [${preferred}, ${preferred + limit})`);
 }
 
-export function isPortOpen(port: number, timeoutMs = 500): Promise<boolean> {
+export function isPortOpen(host: string, port: number, timeoutMs = 500): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = connect({ host: "127.0.0.1", port });
+    const socket = connect({ host, port });
     let settled = false;
     const finish = (open: boolean) => {
       if (settled) return;
@@ -274,25 +310,34 @@ export function isPortOpen(port: number, timeoutMs = 500): Promise<boolean> {
   });
 }
 
-export async function waitForPortOpen(port: number, timeoutMs: number): Promise<boolean> {
+export async function waitForPortOpen(
+  host: string,
+  port: number,
+  timeoutMs: number
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await isPortOpen(port)) return true;
+    if (await isPortOpen(host, port)) return true;
     await delay(250);
   }
-  return isPortOpen(port);
+  return isPortOpen(host, port);
 }
 
-export async function waitForPortClosed(port: number, timeoutMs: number): Promise<boolean> {
+export async function waitForPortClosed(
+  host: string,
+  port: number,
+  timeoutMs: number
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!(await isPortOpen(port))) return true;
+    if (!(await isPortOpen(host, port))) return true;
     await delay(250);
   }
-  return !(await isPortOpen(port));
+  return !(await isPortOpen(host, port));
 }
 
 export function probeAdminPage(
+  host: string,
   port: number,
   timeoutMs: number = HTTP_PROBE_TIMEOUT_MS
 ): Promise<"closed" | "ours" | "other"> {
@@ -305,7 +350,7 @@ export function probeAdminPage(
       resolve(result);
     };
     const req = request(
-      { host: "127.0.0.1", port, path: "/", method: "GET", timeout: timeoutMs },
+      { host, port, path: "/", method: "GET", timeout: timeoutMs },
       (res) => {
         res.setEncoding("utf8");
         res.on("data", (chunk: string) => {
@@ -376,17 +421,67 @@ function spawnServerAdapter(
   };
 }
 
+const adminHostProbes = new Map<string, boolean>();
+
+/**
+ * Does this runtime understand `admin start --host`? The version string cannot
+ * tell old and new frozen builds apart (both report 0.9.0), so ask the CLI once
+ * per exe build (size + mtime key). Only called for a non-default host.
+ */
+export async function probeAdminHostSupport(exePath: string): Promise<boolean> {
+  let key: string;
+  try {
+    const info = await stat(exePath);
+    key = `${exePath}|${info.size}|${info.mtimeMs}`;
+  } catch {
+    return false;
+  }
+  const cached = adminHostProbes.get(key);
+  if (cached !== undefined) return cached;
+
+  const supported = await new Promise<boolean>((resolve) => {
+    let output = "";
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      resolve(value);
+    };
+    const child = spawn(exePath, ["admin", "start", "--help"], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    timer = setTimeout(() => {
+      child.kill();
+      finish(false);
+    }, ADMIN_HOST_PROBE_TIMEOUT_MS);
+    const collect = (chunk: Buffer) => {
+      output += chunk.toString();
+    };
+    child.stdout?.on("data", collect);
+    child.stderr?.on("data", collect);
+    child.on("error", () => finish(false));
+    // Decide on close: stdout may still be draining when exit fires.
+    child.on("close", () => finish(output.includes("--host")));
+  });
+  adminHostProbes.set(key, supported);
+  return supported;
+}
+
 export function createServerOps(extensionPath: string): ServerOps {
   return {
     resolveRuntime: () => resolveRuntimeFromDisk(readConfig(), extensionPath),
     readConfig,
     spawnServer: spawnServerAdapter,
-    isPortOpen: (port) => isPortOpen(port),
-    probeAdminPage: (port) => probeAdminPage(port),
-    waitForPortOpen: (port, timeoutMs) => waitForPortOpen(port, timeoutMs),
-    waitForPortClosed: (port, timeoutMs) => waitForPortClosed(port, timeoutMs),
-    findFreePort: (preferred) => findFreePort(preferred, (port) => isPortOpen(port)),
+    isPortOpen: (host, port) => isPortOpen(host, port),
+    probeAdminPage: (host, port) => probeAdminPage(host, port),
+    waitForPortOpen: (host, port, timeoutMs) => waitForPortOpen(host, port, timeoutMs),
+    waitForPortClosed: (host, port, timeoutMs) => waitForPortClosed(host, port, timeoutMs),
+    findFreePort: (host, preferred) => findFreePort(preferred, (port) => isPortOpen(host, port)),
     killTree: (pid) => killTree(pid),
+    supportsAdminHost: (exePath) => probeAdminHostSupport(exePath),
   };
 }
 

@@ -13,10 +13,20 @@ import {
   startIngestBatch,
   type IngestJobSummary,
 } from "./ingest";
+import { adminBaseUrl, connectHost, DEFAULT_HOST, parseHost } from "./host";
 import { logLine } from "./log";
+import type { MigrationState } from "./migration";
 import type { McpProviderHandle } from "./mcp/provider";
-import { fetchVaults, runSearch, switchVault, type SearchParams } from "./search";
+import {
+  fetchVaults,
+  httpJson,
+  runSearch,
+  switchVault,
+  type HttpJson,
+  type SearchParams,
+} from "./search";
 import type { ServerStatus } from "./server";
+import { buildSnippetView } from "./snippet";
 
 export interface LauncherHtmlOptions {
   nonce: string;
@@ -70,6 +80,20 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
   }
   #status-dot.starting, #status-dot.stopping { background: var(--vscode-charts-yellow, #cca700); }
   #status-dot.error { background: var(--vscode-errorForeground, #f48771); }
+  #status-dot.setup { background: var(--vscode-charts-yellow, #cca700); }
+
+  #setup-banner {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 8px;
+    background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, .18));
+    border-bottom: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-panel-border));
+    font-size: var(--fs-sm);
+  }
+  #setup-text { flex: 1; min-width: 0; }
+  #setup-action {
+    color: var(--vscode-textLink-foreground); text-decoration: none; white-space: nowrap;
+  }
+  #setup-action:hover { text-decoration: underline; }
 
   .actions { display: flex; align-items: center; gap: 2px; }
   .icon {
@@ -223,23 +247,45 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
   }
   .hit-snippet {
     display: -webkit-box; margin-top: 3px; overflow: hidden;
-    font-size: var(--fs-sm); line-height: 1.35;
-    -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    font-size: var(--fs-sm); line-height: 1.35; white-space: pre-wrap;
+    -webkit-line-clamp: 3; -webkit-box-orient: vertical;
   }
+  .hit-snippet.expanded {
+    display: block; -webkit-line-clamp: none;
+    max-height: 13.5em; overflow-y: auto;
+  }
+  .hit-snippet strong {
+    font-weight: 700;
+    color: var(--vscode-list-highlightForeground, var(--vscode-textLink-foreground));
+  }
+  .snippet-actions { display: flex; justify-content: flex-end; margin-top: 2px; }
+  .snippet-toggle {
+    display: inline-block; padding: 0; border: 0; background: none;
+    color: var(--vscode-textLink-foreground); font: inherit; font-size: var(--fs-sm);
+    cursor: pointer;
+  }
+  .snippet-toggle:hover { text-decoration: underline; }
   .empty {
     padding: 12px 8px; text-align: center; color: var(--vscode-descriptionForeground);
     border: 1px dashed var(--vscode-panel-border); border-radius: 3px;
   }
 
   #backdrop { position: fixed; inset: 0; z-index: 40; }
-  #menu {
-    position: fixed; top: 32px; right: 6px; z-index: 50;
-    width: min(260px, calc(100vw - 16px)); max-height: calc(100vh - 40px); overflow-y: auto;
+  #menu, #hitmenu {
+    position: fixed; z-index: 50;
     padding: 4px 0; border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
     border-radius: 4px;
     background: var(--vscode-menu-background, var(--vscode-dropdown-background));
     color: var(--vscode-menu-foreground, var(--vscode-foreground));
     box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+  }
+  #menu {
+    top: 32px; right: 6px;
+    width: min(260px, calc(100vw - 16px)); max-height: calc(100vh - 40px); overflow-y: auto;
+  }
+  #hitmenu {
+    min-width: 190px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px);
+    overflow-y: auto;
   }
   .menu-title {
     padding: 5px 10px 2px; font-size: var(--fs-xs); letter-spacing: .06em;
@@ -316,6 +362,11 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
   </div>
 </div>
 
+<div id="setup-banner" role="status" hidden>
+  <span id="setup-text">Data folder setup required</span>
+  <a id="setup-action" href="command:${COMMANDS.resumeMigration}">Set up data folder</a>
+</div>
+
 <div id="vault-row">
   <select id="vault" aria-label="Knowledge base" title="Current knowledge base"><option value="">Loading knowledge bases…</option></select>
 </div>
@@ -373,15 +424,31 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
   <button id="menu-upload-folder" class="menu-item" data-group="ingest" role="menuitem" type="button">Upload folder…</button>
   <button id="menu-progress" class="menu-item" data-group="ingest" role="menuitem" type="button">Conversion progress <span id="menu-jobs-badge" class="menu-badge" hidden>0</span></button>
 
+  <div class="menu-title">Backup</div>
+  <a id="menu-export" class="menu-item" data-group="backup" role="menuitem" href="command:${COMMANDS.cliExport}" title="Export all documents as Markdown">Export backup (Markdown)…</a>
+  <a id="menu-import" class="menu-item" data-group="backup" role="menuitem" href="command:${COMMANDS.cliImport}" title="Import Markdown files into the knowledge base">Import backup (Markdown)…</a>
+
   <div class="menu-title">Git</div>
   <button id="menu-git" class="menu-item" data-group="git" role="menuitem" type="button">Open Git page</button>
 
   <div class="menu-title">Maintenance</div>
   <a id="menu-install-skills" class="menu-item" data-group="more" role="menuitem" href="command:${COMMANDS.installAgentSkills}">Install MCP &amp; skills</a>
+  <a id="menu-install-cli-tools" class="menu-item" data-group="more" role="menuitem" href="command:${COMMANDS.installCliTools}">Install CLI tools</a>
+  <a id="menu-setup-guide" class="menu-item" data-group="more" role="menuitem" href="command:${COMMANDS.openSetupGuide}">Setup guide</a>
   <a id="menu-skills-state" class="menu-item" data-group="more" role="menuitem" href="command:${COMMANDS.showSkillsState}">Skills status</a>
   <a id="menu-doctor" class="menu-item" data-group="more" role="menuitem" href="command:${COMMANDS.cliDoctor}">Run doctor</a>
   <a id="menu-logs" class="menu-item" data-group="more" role="menuitem" href="command:${COMMANDS.showLogs}">Show logs</a>
   <a id="menu-runtime" class="menu-item" data-group="more" role="menuitem" href="command:${COMMANDS.showRuntimeInfo}">Runtime info</a>
+</div>
+
+<div id="hitmenu" role="menu" aria-label="Search result actions" hidden>
+  <div class="menu-title">Search result</div>
+  <button class="menu-item" data-action="open" role="menuitem" type="button">Open document</button>
+  <button class="menu-item" data-action="copy-title" role="menuitem" type="button">Copy title</button>
+  <button class="menu-item" data-action="copy-id" role="menuitem" type="button">Copy document ID</button>
+  <button class="menu-item" data-action="copy-snippet" role="menuitem" type="button">Copy snippet</button>
+  <button class="menu-item" data-action="copy-link" role="menuitem" type="button">Copy link</button>
+  <button class="menu-item" data-action="copy-selection" role="menuitem" type="button" hidden>Copy selected text</button>
 </div>
 
 <div id="jobs" role="dialog" aria-modal="true" aria-labelledby="jobs-title" hidden>
@@ -404,6 +471,10 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
   var statusChip = $("status-chip");
   var statusDot = $("status-dot");
   var statusText = $("status-text");
+  var setupBanner = $("setup-banner");
+  var setupText = $("setup-text");
+  var setupRequired = false;
+  var lastStatus = null;
   var vaultSelect = $("vault");
   var queryInput = $("query");
   var modeGroup = $("mode");
@@ -423,6 +494,7 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
   var historyEl = $("history");
   var menuButton = $("btn-menu");
   var menuEl = $("menu");
+  var hitMenuEl = $("hitmenu");
   var backdrop = $("backdrop");
   var menuStart = $("menu-start");
   var menuRestart = $("menu-restart");
@@ -447,6 +519,9 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
   var MODES = ["hybrid", "lexical", "fuzzy", "semantic", "rrf"];
   var LIMITS = [10, 25, 50];
   var saved = vscode.getState() || {};
+  var hitMenuCard = null;
+  var hitMenuHit = null;
+  var hitMenuSelection = "";
 
   function segmentValue(group) {
     var active = group.querySelector('[aria-checked="true"]');
@@ -516,19 +591,31 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
     filtersToggle.setAttribute("aria-label", count ? "Filters, " + count + " active" : "Filters");
   }
 
+  function displayHost(value) {
+    var host = String(value || "127.0.0.1");
+    return host.indexOf(":") >= 0 && host.charAt(0) !== "[" ? "[" + host + "]" : host;
+  }
+
   function renderServer(status) {
     status = status || {};
+    lastStatus = status;
     var state = String(status.state || "stopped");
     serverRunning = state === "running-own" || state === "running-external";
     var label;
     if (state === "running-own") label = "running";
-    else if (state === "running-external") label = "127.0.0.1" + (status.port ? ":" + status.port : "");
+    else if (state === "running-external") {
+      label = displayHost(status.host) + (status.port ? ":" + status.port : "");
+    }
     else if (state === "stopped") label = "start";
     else label = state;
+    var setupActive = setupRequired && !serverRunning;
+    if (setupActive) label = "setup required";
     statusText.textContent = label;
-    statusDot.className = state;
+    statusDot.className = setupActive ? "setup" : state;
+    // A running/external server always wins over the setup banner.
+    setupBanner.hidden = !setupActive;
     statusChip.title = "Admin server: " + state +
-      (status.port ? " on port " + status.port : "") +
+      (status.port ? " on " + displayHost(status.host) + ":" + status.port : "") +
       (status.message ? " - " + status.message : "");
     menuStart.hidden = serverRunning;
     menuRestart.hidden = !serverRunning;
@@ -574,8 +661,45 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
     return String(value || "").replace(/<[^>]*>/g, "");
   }
 
+  function appendSegments(target, segments) {
+    for (var i = 0; i < segments.length; i++) {
+      var segment = segments[i] || {};
+      var text = String(segment.text || "");
+      if (!text) continue;
+      if (segment.match) {
+        var strong = document.createElement("strong");
+        strong.textContent = text;
+        target.appendChild(strong);
+      } else {
+        target.appendChild(document.createTextNode(text));
+      }
+    }
+  }
+
+  function addSnippetToggle(card, snippet, view) {
+    var actions = document.createElement("div");
+    actions.className = "snippet-actions";
+    var toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "snippet-toggle";
+    toggle.textContent = "Show more";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.addEventListener("click", function (event) {
+      event.stopPropagation();
+      var expand = toggle.getAttribute("aria-expanded") !== "true";
+      toggle.setAttribute("aria-expanded", expand ? "true" : "false");
+      toggle.textContent = expand ? "Show less" : "Show more";
+      snippet.classList.toggle("expanded", expand);
+      snippet.replaceChildren();
+      appendSegments(snippet, expand ? view.expanded : view.collapsed);
+    });
+    actions.appendChild(toggle);
+    card.appendChild(actions);
+  }
+
   function renderResults(data) {
     var hits = Array.isArray(data.hits) ? data.hits : [];
+    closeHitMenu(false);
     resultsEl.replaceChildren();
     if (hits.length === 0) {
       var empty = document.createElement("div");
@@ -588,9 +712,11 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
     for (var i = 0; i < hits.length; i++) {
       var hit = hits[i] || {};
       var doc = hit.doc || {};
-      var card = document.createElement("button");
-      card.type = "button";
+      var card = document.createElement("div");
       card.className = "hit";
+      card.setAttribute("role", "button");
+      card.tabIndex = 0;
+      card.hitData = hit;
       card.title = "Open " + (doc.title || doc.id) + " in the built-in browser";
 
       var head = document.createElement("span");
@@ -612,14 +738,29 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
 
       var snippet = document.createElement("span");
       snippet.className = "hit-snippet";
-      snippet.textContent = stripTags(hit.snippet) || stripTags((doc.body || "").slice(0, 180));
+      var view = hit.snippetView;
+      if (view && Array.isArray(view.collapsed)) {
+        appendSegments(snippet, view.collapsed);
+      } else {
+        snippet.textContent = stripTags(hit.snippet) || stripTags((doc.body || "").slice(0, 180));
+      }
 
       card.appendChild(head);
       card.appendChild(meta);
       card.appendChild(snippet);
+      if (view && view.expandable && Array.isArray(view.expanded)) {
+        addSnippetToggle(card, snippet, view);
+      }
       (function (id) {
         card.addEventListener("click", function () {
           vscode.postMessage({ type: "openDocument", id: id });
+        });
+        card.addEventListener("keydown", function (event) {
+          if (event.target !== card) return;
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            vscode.postMessage({ type: "openDocument", id: id });
+          }
         });
       })(doc.id);
       resultsEl.appendChild(card);
@@ -835,6 +976,52 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
     vscode.postMessage({ type: "hideJobs" });
   }
 
+  function closeHitMenu(restoreFocus) {
+    if (hitMenuEl.hidden) return;
+    hitMenuEl.hidden = true;
+    if (menuEl.hidden && jobsPane.hidden) backdrop.hidden = true;
+    var previous = hitMenuCard;
+    hitMenuCard = null;
+    hitMenuHit = null;
+    hitMenuSelection = "";
+    if (restoreFocus !== false && previous && previous.focus) previous.focus();
+  }
+
+  function openHitMenu(card, hit, x, y, selection) {
+    closeMenu();
+    closeJobs();
+    hitMenuCard = card;
+    hitMenuHit = hit || {};
+    hitMenuSelection = selection || "";
+    hitMenuEl.querySelector('[data-action="copy-selection"]').hidden = !hitMenuSelection;
+    hitMenuEl.hidden = false;
+    backdrop.hidden = false;
+    hitMenuEl.style.left = "0px";
+    hitMenuEl.style.top = "0px";
+    var rect = hitMenuEl.getBoundingClientRect();
+    var left = x;
+    var top = y;
+    if (!left && !top && card.getBoundingClientRect) {
+      var cardRect = card.getBoundingClientRect();
+      left = cardRect.left + 12;
+      top = cardRect.bottom - 4;
+    }
+    left = Math.max(4, Math.min(left, window.innerWidth - rect.width - 4));
+    top = Math.max(4, Math.min(top, window.innerHeight - rect.height - 4));
+    hitMenuEl.style.left = left + "px";
+    hitMenuEl.style.top = top + "px";
+    var first = hitMenuEl.querySelector(".menu-item:not([hidden])");
+    if (first) first.focus();
+  }
+
+  function copyText(text, label) {
+    if (!text) {
+      setStatus("Nothing to copy.", "err");
+      return;
+    }
+    vscode.postMessage({ type: "copyText", text: text, label: label });
+  }
+
   function submitSearch() {
     if (busy) return;
     var query = queryInput.value.trim();
@@ -894,6 +1081,42 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
   backdrop.addEventListener("click", function () {
     closeMenu();
     closeJobs();
+    closeHitMenu();
+  });
+
+  resultsEl.addEventListener("contextmenu", function (event) {
+    var target = event.target;
+    var card = target && target.closest ? target.closest(".hit") : null;
+    if (!card) return;
+    event.preventDefault();
+    var selection = "";
+    if (window.getSelection) selection = String(window.getSelection().toString() || "").trim();
+    openHitMenu(card, card.hitData, event.clientX, event.clientY, selection);
+  });
+
+  hitMenuEl.addEventListener("click", function (event) {
+    var target = event.target;
+    var item = target && target.closest ? target.closest(".menu-item") : null;
+    if (!item) return;
+    var action = item.getAttribute("data-action");
+    var hit = hitMenuHit || {};
+    var doc = hit.doc || {};
+    var view = hit.snippetView || {};
+    var selection = hitMenuSelection;
+    closeHitMenu();
+    if (action === "open") {
+      vscode.postMessage({ type: "openDocument", id: doc.id });
+    } else if (action === "copy-title") {
+      copyText(String(doc.title || doc.id || ""), "Title");
+    } else if (action === "copy-id") {
+      copyText(String(doc.id || ""), "Document ID");
+    } else if (action === "copy-snippet") {
+      copyText(String(view.plain || stripTags(hit.snippet) || ""), "Snippet");
+    } else if (action === "copy-link") {
+      vscode.postMessage({ type: "copyDocumentLink", id: doc.id });
+    } else if (action === "copy-selection") {
+      copyText(selection, "Selection");
+    }
   });
 
   $("menu-console").addEventListener("click", function () {
@@ -1039,6 +1262,10 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
         closeJobs();
         return;
       }
+      if (!hitMenuEl.hidden) {
+        closeHitMenu();
+        return;
+      }
       if (!menuEl.hidden) {
         closeMenu();
         return;
@@ -1057,6 +1284,16 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
     var message = event.data || {};
     if (message.type === "server") {
       renderServer(message.status);
+      return;
+    }
+    if (message.type === "setup") {
+      var setupState = message.state || {};
+      setupRequired = setupState.kind === "pending";
+      setupBanner.hidden = !setupRequired;
+      if (setupRequired) {
+        setupText.textContent = setupState.message || "Data folder setup required";
+      }
+      if (lastStatus) renderServer(lastStatus);
       return;
     }
     if (message.type === "mcp") {
@@ -1084,6 +1321,10 @@ export function renderLauncherHtml(options: LauncherHtmlOptions): string {
     }
     if (message.type === "refreshed") {
       $("btn-refresh").disabled = false;
+      return;
+    }
+    if (message.type === "notice") {
+      setStatus(String(message.text || ""), "ok");
       return;
     }
     if (message.type === "ingestProgress") {
@@ -1164,9 +1405,9 @@ function errorText(error: unknown): string {
 }
 
 /** Keep "/" as a path separator; encode each document-id segment. */
-export function documentUrl(port: number, id: string): string {
+export function documentUrl(port: number, id: string, host: string = DEFAULT_HOST): string {
   const encoded = id.split("/").map(encodeURIComponent).join("/");
-  return `http://127.0.0.1:${port}/documents/${encoded}`;
+  return `http://${parseHost(host).urlHost}:${port}/documents/${encoded}`;
 }
 
 async function openInSimpleBrowser(url: string): Promise<void> {
@@ -1183,6 +1424,8 @@ export interface LauncherDeps {
   extensionId: string;
   ensureRunning: () => Promise<ServerStatus>;
   getStatus: () => ServerStatus;
+  /** Migration gate state used to show the "setup required" banner. */
+  getSetupState?: () => MigrationState | null;
   history: SearchHistoryStore;
   mcp: McpProviderHandle;
 }
@@ -1196,6 +1439,7 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
   private jobsPolling = false;
   private lastJobs: IngestJobSummary[] = [];
   private lastRunning = false;
+  private lastSetup: MigrationState | null = null;
 
   constructor(private readonly deps: LauncherDeps) {}
 
@@ -1223,10 +1467,17 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
     this.lastRunning = isRunningStatus(status);
     this.postServer(status);
     this.postMcp();
+    this.postSetup();
 
     // Start (or reuse) the admin server without stealing focus. The webview asks
     // for vaults once its message listener is installed.
     void this.deps.ensureRunning().catch(() => undefined);
+  }
+
+  /** Called by the migration gate; a `pending` state shows the setup banner. */
+  updateSetupState(state: MigrationState | null): void {
+    this.lastSetup = state;
+    this.post({ type: "setup", state });
   }
 
   updateStatus(status: ServerStatus): void {
@@ -1258,6 +1509,7 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
         // sent before the script was running.
         this.postServer(this.deps.getStatus());
         this.postMcp();
+        this.postSetup();
         await this.refreshVaults();
         return;
       case "refresh":
@@ -1302,6 +1554,30 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
           await this.openDocument(message.id);
         }
         return;
+      case "copyText": {
+        const text = typeof message.text === "string" ? message.text : "";
+        if (!text) return;
+        const label = typeof message.label === "string" && message.label ? message.label : "Text";
+        try {
+          await vscode.env.clipboard.writeText(text);
+          this.post({ type: "notice", text: `${label} copied.` });
+        } catch (error) {
+          this.postError(error);
+        }
+        return;
+      }
+      case "copyDocumentLink": {
+        if (typeof message.id !== "string" || !message.id) return;
+        try {
+          const port = await this.port();
+          const host = connectHost(this.deps.getStatus().host);
+          await vscode.env.clipboard.writeText(documentUrl(port, message.id, host));
+          this.post({ type: "notice", text: "Link copied." });
+        } catch (error) {
+          this.postError(error);
+        }
+        return;
+      }
       case "reloadMcp":
         this.reloadMcp();
         return;
@@ -1339,6 +1615,21 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
     return status.port;
   }
 
+  /** JSON client bound to the server's connect address (wildcards already mapped). */
+  private http(): HttpJson {
+    const host = connectHost(this.deps.getStatus().host);
+    return (port, path, options) => httpJson(port, path, { ...options, host });
+  }
+
+  private async baseUrl(): Promise<string> {
+    const status = await this.deps.ensureRunning();
+    const url = adminBaseUrl(status);
+    if (url === null) {
+      throw new Error(status.message ?? "hyseed admin server did not start");
+    }
+    return url;
+  }
+
   private async refreshAll(): Promise<void> {
     this.postServer(this.deps.getStatus());
     this.postMcp();
@@ -1349,7 +1640,7 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
 
   private async refreshVaults(): Promise<void> {
     try {
-      const data = await fetchVaults(await this.port());
+      const data = await fetchVaults(await this.port(), this.http());
       this.currentVault = data.current;
       this.post({ type: "vaults", data });
       this.postHistory();
@@ -1360,8 +1651,7 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
 
   private async openAdmin(): Promise<void> {
     try {
-      const port = await this.port();
-      await openInSimpleBrowser(`http://127.0.0.1:${port}/`);
+      await openInSimpleBrowser(`${await this.baseUrl()}/`);
     } catch (error) {
       this.postError(error);
     }
@@ -1369,8 +1659,7 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
 
   private async openPage(route: string): Promise<void> {
     try {
-      const port = await this.port();
-      await openInSimpleBrowser(`http://127.0.0.1:${port}${route}`);
+      await openInSimpleBrowser(`${await this.baseUrl()}${route}`);
     } catch (error) {
       this.postError(error);
     }
@@ -1378,7 +1667,7 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
 
   private async switchTo(name: string): Promise<void> {
     try {
-      this.currentVault = await switchVault(await this.port(), name);
+      this.currentVault = await switchVault(await this.port(), name, this.http());
       this.post({ type: "vault", current: this.currentVault });
       this.postHistory();
     } catch (error) {
@@ -1389,13 +1678,25 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
   private async search(params: SearchParams, requestId: number): Promise<void> {
     try {
       const outcome = await runSearch(await this.port(), params, this.currentVault, {
+        http: this.http(),
         onVaultChanged: (current) => {
           this.currentVault = current;
           this.post({ type: "vault", current });
         },
       });
       this.currentVault = outcome.current;
-      this.post({ type: "results", requestId, data: outcome.result });
+      const data = {
+        ...outcome.result,
+        hits: outcome.result.hits.map((hit) => ({
+          ...hit,
+          snippetView: buildSnippetView(
+            params.query,
+            hit.doc?.body ?? "",
+            hit.snippet ?? ""
+          ),
+        })),
+      };
+      this.post({ type: "results", requestId, data });
       await this.recordQuery(params.query);
     } catch (error) {
       this.postError(error, requestId, "search");
@@ -1442,7 +1743,8 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
   private async openDocument(id: string): Promise<void> {
     try {
       const port = await this.port();
-      await openInSimpleBrowser(documentUrl(port, id));
+      const host = connectHost(this.deps.getStatus().host);
+      await openInSimpleBrowser(documentUrl(port, id, host));
     } catch (error) {
       this.postError(error);
     }
@@ -1498,7 +1800,9 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
     try {
       this.post({ type: "ingestProgress", phase: "scanning" });
       const port = await this.port();
-      const limits = await fetchIngestLimits(port);
+      const http = this.http();
+      const host = connectHost(this.deps.getStatus().host);
+      const limits = await fetchIngestLimits(port, http);
       const plan =
         kind === "folder"
           ? await planFolderUpload(picked[0].fsPath, limits)
@@ -1506,7 +1810,7 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
               picked.map((uri) => uri.fsPath),
               limits
             );
-      const batch = await createIngestBatch(port, this.currentVault);
+      const batch = await createIngestBatch(port, this.currentVault, http);
       if (!this.currentVault && batch.vault) this.currentVault = batch.vault;
 
       const total = plan.files.length;
@@ -1526,7 +1830,8 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
             port,
             batch.batch_id,
             file,
-            kind === "folder" ? "folder" : "upload"
+            kind === "folder" ? "folder" : "upload",
+            host
           );
           if (result.ok) uploaded += 1;
           else rejected += 1;
@@ -1542,7 +1847,7 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
         );
       }
       this.post({ type: "ingestProgress", phase: "starting", done: total, total });
-      const started = await startIngestBatch(port, batch.batch_id);
+      const started = await startIngestBatch(port, batch.batch_id, http);
       this.post({
         type: "ingestResult",
         uploaded,
@@ -1568,7 +1873,7 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
 
   private async refreshJobs(): Promise<boolean> {
     try {
-      const jobs = await listIngestJobs(await this.port());
+      const jobs = await listIngestJobs(await this.port(), this.http());
       this.lastJobs = jobs;
       this.post({ type: "jobs", jobs });
       return true;
@@ -1611,6 +1916,14 @@ export class AdminLauncherViewProvider implements vscode.WebviewViewProvider {
 
   private postServer(status: ServerStatus): void {
     this.post({ type: "server", status });
+  }
+
+  private postSetup(): void {
+    const state = this.lastSetup ?? this.deps.getSetupState?.() ?? null;
+    if (state) {
+      this.lastSetup = state;
+      this.post({ type: "setup", state });
+    }
   }
 
   private post(message: unknown): void {

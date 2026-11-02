@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import { request } from "node:http";
 import * as path from "node:path";
+import { DEFAULT_HOST } from "./host";
 import { httpErrorMessage, httpJson, type HttpJson } from "./search";
 
 export interface IngestLimits {
@@ -212,7 +213,8 @@ export function postIngestFile(
   port: number,
   batchId: string,
   file: IngestPlanFile,
-  source: "upload" | "folder"
+  source: "upload" | "folder",
+  host: string = DEFAULT_HOST
 ): Promise<IngestFileResult> {
   return new Promise<IngestFileResult>((resolve, reject) => {
     if (file.size <= 0) {
@@ -232,7 +234,7 @@ export function postIngestFile(
     const url = `/api/ingest/batches/${encodeURIComponent(batchId)}/files`;
     const req = request(
       {
-        host: "127.0.0.1",
+        host,
         port,
         path: url,
         method: "POST",

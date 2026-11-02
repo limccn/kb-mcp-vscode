@@ -69,10 +69,16 @@ describe("resolveRuntime candidate chain", () => {
     );
   });
 
-  it("hits the legacy ~/.local/share/kb-mcp with the legacy name", async () => {
-    await expectResolve(
-      makeDeps({ existing: [join(SHARE_LEGACY, "kb-mcp.exe")] }),
-      join(SHARE_LEGACY, "kb-mcp.exe")
+  it("no longer recognizes the pre-rename executable or share directory", async () => {
+    await assert.rejects(
+      resolveRuntime(
+        makeDeps({
+          existing: [join(SHARE_LEGACY, "kb-mcp.exe"), join(BIN, "kb-mcp.exe")],
+        })
+      ),
+      (err: unknown) =>
+        err instanceof RuntimeResolveError &&
+        !err.candidates.some((candidate) => candidate.path.toLowerCase().includes("kb-mcp"))
     );
   });
 
@@ -89,7 +95,7 @@ describe("resolveRuntime candidate chain", () => {
     assert.equal(resolved.candidates.at(-1)?.kind, "bundled");
   });
 
-  it("prefers hyseed.exe when both names exist in one directory", async () => {
+  it("ignores a pre-rename executable in the same directory", async () => {
     await expectResolve(
       makeDeps({
         existing: [join(BIN, "hyseed.exe"), join(BIN, "kb-mcp.exe")],
@@ -133,7 +139,7 @@ describe("resolveRuntime name-list extension slot", () => {
     await expectResolve(
       makeDeps({
         existing: [join(SHARE, "newseed.exe")],
-        exeNames: ["hyseed.exe", "kb-mcp.exe", "newseed.exe"],
+        exeNames: ["hyseed.exe", "newseed.exe"],
       }),
       join(SHARE, "newseed.exe")
     );

@@ -38,13 +38,11 @@ class ScriptedUi implements CliUi {
 }
 
 const NEW_TOKEN = "C:/home/.hyseed-http-token";
-const LEGACY_TOKEN = "C:/home/.kb-mcp-http-token";
 
 function fakeToken(files: Record<string, string> = {}) {
   const generated: string[] = [];
   const source: TokenSource = {
-    newFile: NEW_TOKEN,
-    legacyFile: LEGACY_TOKEN,
+    file: NEW_TOKEN,
     read(file) {
       return files[file] ?? null;
     },
@@ -70,11 +68,12 @@ function makeDeps(overrides: Partial<CliDeps> = {}): CliDeps {
 }
 
 describe("resolveToken", () => {
-  it("prefers the new token file, then the pre-rename fallback", async () => {
-    const both = fakeToken({ [NEW_TOKEN]: "NEW", [LEGACY_TOKEN]: "OLD" });
-    assert.equal(await resolveToken(new ScriptedUi(), both.source), NEW_TOKEN);
-    const legacyOnly = fakeToken({ [LEGACY_TOKEN]: "OLD" });
-    assert.equal(await resolveToken(new ScriptedUi(), legacyOnly.source), LEGACY_TOKEN);
+  it("uses the 0.2.0 token file and never the pre-rename one", async () => {
+    const existing = fakeToken({ [NEW_TOKEN]: "NEW" });
+    assert.equal(await resolveToken(new ScriptedUi(), existing.source), NEW_TOKEN);
+    const legacyOnly = fakeToken({ "C:/home/.kb-mcp-http-token": "OLD" });
+    assert.equal(await resolveToken(new ScriptedUi({ confirms: [false] }), legacyOnly.source), null);
+    assert.deepEqual(legacyOnly.generated, []);
   });
 
   it("generates a new token only after confirmation", async () => {
@@ -89,8 +88,7 @@ describe("resolveToken", () => {
 
   it("reports a token file that stays empty after writing", async () => {
     const source: TokenSource = {
-      newFile: NEW_TOKEN,
-      legacyFile: LEGACY_TOKEN,
+      file: NEW_TOKEN,
       read: () => null,
       generate: () => {},
     };
@@ -209,6 +207,24 @@ describe("runCliCommand", () => {
       "echo [hyseed exit=%errorlevel%]",
     ]);
     assert.ok(lines.every((line) => !line.includes("SECRET-TOKEN-VALUE")));
+  });
+
+  it("adds --host when the configured mcp host is not loopback", async () => {
+    const { source } = fakeToken({ [NEW_TOKEN]: "t" });
+    const sent: string[][] = [];
+    await runCliCommand(
+      COMMANDS.cliServeHttp,
+      new ScriptedUi({ inputs: ["8123"], confirms: [true] }),
+      makeDeps({
+        token: source,
+        mcpHost: () => "0.0.0.0",
+        sendToTerminal: (lines) => sent.push(lines),
+      })
+    );
+    assert.equal(
+      sent[0][1],
+      '"C:/bin/hyseed.exe" serve --transport http --host 0.0.0.0 --port 8123'
+    );
   });
 
   it("generates the token when missing and stops when generation is declined", async () => {

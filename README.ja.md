@@ -1,215 +1,152 @@
-# VS Code 向け hyseed
+# hyseed for VS Code
 
-**hyseed**（旧 kb-mcp）ローカルナレッジベースを VS Code に：管理コンソールを Webview タブで、
-MCP／スキルのセットアップ、vault 管理、よく使う CLI コマンドをコマンドパレットから。
+VS Code の中でローカルの **hyseed** ナレッジベースを使えます。サイドバー検索、管理コンソール、
+MCP／スキルの導入、よく使う CLI コマンドをエディタから実行できます。
 
-> ステータス：早期開発（0.1.1）。現時点では Windows x64 のみ。
+Windows x64、VS Code 1.101 以上。
 
-## 機能
+## 主な機能
 
-- **管理コンソールタブ** — hyseed の管理 UI を VS Code 内で表示。拡張機能が所有するサーバーが支えます。
-- **アクティビティバーのパネル** — コンパクトな検索面：vault は専用行、モードと件数は 1 行の
-  セグメントコントロール（hybrid／lexical／fuzzy／semantic／rrf、10／25／50。298px 未満では件数段を非表示）、フィルターは漏斗
-  アイコンで開閉し件数バッジを表示。クエリ欄には vault ごとの検索履歴（矢印キー、Enter、個別削除、
-  2 段階クリア）。アイコンのトップバーに作成・設定・更新・`⋯` アクションメニュー（管理サーバー、
-  MCP の状態／再読み込み、ファイル／フォルダーの取り込みと進捗、`/git` への移動、メンテナンス）・
-  管理コンソールボタンを配置。スキルのインストール／削除はコマンドパレットに残ります。
-- **サーバーのライフサイクル** — 起動・停止・再起動・ブラウザーで開く。ポート競合時は自動で
-  次のポートへ移り、既に動作中のコンソールは再利用されます。
-- **MCP サーバー定義** — VS Code の MCP サポートに `hyseed`（`hyseed serve`）を登録し、
-  ワークスペースの vault ピンに従います。
-- **エージェントスキル** — Claude Code／Codex／Cline 向けのインストール・削除・状態確認を
-  `hyseed skills` CLI 経由でガイドします（global／project スコープ）。
-- **vault** — global／project vault の作成、グローバル既定の切り替え、ワークスペースへの固定。
-- **ターミナル内の CLI** — プロンプト付きの 21 個の `hyseed` コマンドを可視ターミナルで実行。
-
-## 必要環境
-
-- Windows 10/11（x64）
-- VS Code 1.101 以降（1.143.1 で確認）
-- hyseed の別途インストールは不要：`hyseed.exe` をフォールバックとして同梱。
+- **サイドバー検索** — 保管庫ごとの検索、モード・件数・フィルタ・検索履歴。
+- **管理コンソール** — フル機能の hyseed 管理画面を Webview タブで表示。
+- **MCP とスキル** — `hyseed` MCP サーバーを登録し、Claude Code／Codex／Cline 用スキルを導入。
+- **保管庫** — グローバル保管庫と、ワークスペース単位の固定。
+- **バックアップ** — `⋯` メニューから全ドキュメントを Markdown で書き出し／取り込み。
+- **すぐ使える** — `hyseed.exe` を同梱。別途インストール不要。
 
 ## インストール
 
 ```bash
-code --install-extension kbmcp-vscode-win32-x64-0.1.1.vsix
+code --install-extension kbmcp-vscode-win32-x64-0.2.0.vsix
 ```
 
-イントラネット配布では同じ VSIX を共有するだけで、マーケットプレイスは不要です。インストール後に
-ウィンドウを再読み込みしてください。コマンドは `hyseed:` プレフィックスにあります。
+インストール後にウィンドウを再読み込みしてください。コマンドは `hyseed:` にあります。
 
-公開後（publisher `limccn`）は VS Code Marketplace または Open VSX からインストールできます：
+## はじめに
 
-```bash
-code --install-extension limccn.kbmcp-vscode
-```
+1. **CLI ツール**（推奨・既定でオン）— `hyseed.exe` と `doc-convert.exe` を
+   `%USERPROFILE%\.local\bin` にコピーします。PATH は確認のみで変更しません。
+2. **MCP とスキル**（任意）— AI ツール用の MCP サーバーとスキルを登録します。
+3. **データフォルダー** — 既定（`%USERPROFILE%\.local\share\hyseed`）を受け入れるか、別の場所を
+   選択します。`default` 保管庫が作成されます。
+
+初回インストールまたはメジャー／マイナー更新後にガイドが自動で開きます。
+`hyseed: Setup guide` で再表示でき、管理コンソールの **Doctor** からも開けます。
+
+## 0.1.x からのアップグレード
+
+0.2.0 では旧名称・旧保存先を廃止しました。起動時、データフォルダーが空の場合に 0.1.x の
+データを確認し、選択するまで書き込みません。
+
+- **移行** — 旧データを新しいフォルダーへ移動します。
+- **既存を使う** — 新しいフォルダーを維持し、旧フォルダーはそのまま残します。
+- **後で** — `hyseed: Setup data folder` を実行するまで起動を保留します。
+
+新旧両方にデータがある場合は一方だけを選び、マージはしません。ダウングレードはできないため、
+重要なドキュメントは先にバックアップしてください（`⋯` → **Export backup**）。
+
+`~/.config/kb-mcp`、旧 HTTP トークンファイル、`kb-mcp.exe` は読み込まれません。
+
+## サイドバー
+
+保管庫は専用の行に表示されます。上部バーには新規作成、設定、更新、管理、`⋯` メニュー
+（管理サービス、MCP 状態、アップロード、バックアップの書き出し／取り込み、`/git`、メンテナンス）
+があります。検索結果は VS Code のブラウザーで開き、右クリックでコピーできます。
+
+## データとバックアップ
+
+ドキュメントは既定で `%USERPROFILE%\.local\share\hyseed` に保存されます。拡張機能を更新しても
+このフォルダーは変更されません。`⋯` → **Export backup** で Markdown として持ち出し、
+**Import backup** で復元できます。
 
 ## コマンド
 
-すべてのコマンドはコマンドパレットにあり、プレフィックスは `hyseed:` です。
+すべてコマンドパレットの `hyseed:` にあります。
 
-| コマンド | ID | 動作 |
-|---|---|---|
-| 管理コンソールを開く | `kbmcp.openAdmin` | 必要ならサーバーを起動し、管理コンソールを Webview タブで開く |
-| 管理サーバーを起動 | `kbmcp.startServer` | 拡張機能が所有するプロセスとして管理サーバーを起動 |
-| 管理サーバーを停止 | `kbmcp.stopServer` | 拡張機能が所有するサーバーのプロセスツリーを停止 |
-| 管理サーバーを再起動 | `kbmcp.restartServer` | （所有している場合は）停止してから再起動 |
-| ブラウザーで管理コンソールを開く | `kbmcp.openInBrowser` | システムのブラウザーでコンソールを開く |
-| ランタイム情報を表示 | `kbmcp.showRuntimeInfo` | 解決された実行ファイル、候補、プローブ結果を表示 |
-| ログを表示 | `kbmcp.showLogs` | 出力チャネルを開く |
-| MCP ステータスを表示 | `kbmcp.showMcpStatus` | MCP プロバイダーの id／label、登録状態、データルート、プロジェクト vault を表示 |
-| エージェントスキルをインストール | `kbmcp.installAgentSkills` | Claude Code／Codex／Cline 向けの `hyseed skills add` をガイド（global または project） |
-| エージェントスキルを削除 | `kbmcp.removeAgentSkills` | `hyseed skills remove` をガイド |
-| スキル状態を表示 | `kbmcp.showSkillsState` | 同梱スキルとホストごとのインストール状態を一覧 |
-| vault を作成 | `kbmcp.createVault` | global またはワークスペース固定の vault を作成 |
-| vault を切り替え | `kbmcp.switchVault` | グローバル既定 vault を設定 |
-| プロジェクト vault のピンを解除 | `kbmcp.clearProjectVault` | ワークスペースのピンと `.mcp.json` の env キーを削除 |
-| vault を一覧 | `kbmcp.listVaults` | current／ワークスペースピンのマーカー付きで vault を表示 |
-| CLI 検索 | `kbmcp.cli.search` | ターミナルで `hyseed search <query>` |
-| CLI ドキュメント取得 | `kbmcp.cli.get` | `hyseed get <id>` |
-| CLI ドキュメント一覧 | `kbmcp.cli.list` | `hyseed list` |
-| CLI ドキュメント追加 | `kbmcp.cli.add` | `hyseed add --type … --title … [--body …]` |
-| CLI ドキュメント取り込み | `kbmcp.cli.ingest` | `hyseed ingest [file\|folder] --out <dir>` |
-| CLI Markdown インポート | `kbmcp.cli.import` | `hyseed import <dir>` |
-| CLI Markdown エクスポート | `kbmcp.cli.export` | `hyseed export <dir>` |
-| CLI doctor | `kbmcp.cli.doctor` | `hyseed doctor` |
-| CLI 統計 | `kbmcp.cli.stats` | `hyseed stats` |
-| CLI 再インデックス | `kbmcp.cli.reindex` | `hyseed reindex`（確認あり） |
-| CLI 差分チェック | `kbmcp.cli.diff-check` | `hyseed diff-check` |
-| CLI 履歴 | `kbmcp.cli.history` | `hyseed history <id>` |
-| CLI vault 一覧 | `kbmcp.cli.vaultList` | `hyseed vault list` |
-| CLI vault 作成 | `kbmcp.cli.vaultCreate` | `hyseed vault create <name>` |
-| CLI vault 切り替え | `kbmcp.cli.vaultSwitch` | `hyseed vault switch <name>`（実際の一覧から選択） |
-| CLI vault ステータス | `kbmcp.cli.vaultStatus` | `hyseed vault status` |
-| CLI スキル一覧 | `kbmcp.cli.skillsList` | `hyseed skills list` |
-| CLI スキル表示 | `kbmcp.cli.skillsShow` | `hyseed skills show <name>` |
-| CLI スキル追加 | `kbmcp.cli.skillsAdd` | `hyseed skills add --agent … --scope …` |
-| CLI スキル削除 | `kbmcp.cli.skillsRemove` | `hyseed skills remove --agent … --scope …`（確認あり） |
-| CLI HTTP サービス | `kbmcp.cli.serveHttp` | `hyseed serve --transport http --port <N>` |
+| ID | 用途 |
+|---|---|
+| `kbmcp.openAdmin` | 管理コンソールを開く |
+| `kbmcp.startServer` | 管理サーバーを起動 |
+| `kbmcp.stopServer` | 拡張機能が起動したサーバーを停止 |
+| `kbmcp.restartServer` | サーバーを再起動 |
+| `kbmcp.openInBrowser` | ブラウザーで管理コンソールを開く |
+| `kbmcp.showRuntimeInfo` | 使用中の実行ファイルを表示 |
+| `kbmcp.showLogs` | 出力チャンネルを開く |
+| `kbmcp.showMcpStatus` | MCP の登録状態と保管庫を表示 |
+| `kbmcp.installAgentSkills` | エージェントスキルを導入 |
+| `kbmcp.installCliTools` | `hyseed.exe` / `doc-convert.exe` を導入 |
+| `kbmcp.removeAgentSkills` | エージェントスキルを削除 |
+| `kbmcp.showSkillsState` | スキルの導入状態を表示 |
+| `kbmcp.createVault` | 保管庫を作成 |
+| `kbmcp.switchVault` | 既定の保管庫を切り替え |
+| `kbmcp.clearProjectVault` | ワークスペースの固定を解除 |
+| `kbmcp.listVaults` | 保管庫一覧を表示 |
+| `kbmcp.resumeMigration` | データフォルダーの選択を再開 |
+| `kbmcp.openSetupGuide` | セットアップガイドを開く |
+| `kbmcp.cli.search` | `hyseed search` を実行 |
+| `kbmcp.cli.get` | `hyseed get` を実行 |
+| `kbmcp.cli.list` | `hyseed list` を実行 |
+| `kbmcp.cli.add` | `hyseed add` を実行 |
+| `kbmcp.cli.ingest` | `hyseed ingest` を実行 |
+| `kbmcp.cli.import` | `hyseed import` を実行 |
+| `kbmcp.cli.export` | `hyseed export` を実行 |
+| `kbmcp.cli.doctor` | `hyseed doctor` を実行 |
+| `kbmcp.cli.stats` | `hyseed stats` を実行 |
+| `kbmcp.cli.reindex` | `hyseed reindex` を実行 |
+| `kbmcp.cli.diff-check` | `hyseed diff-check` を実行 |
+| `kbmcp.cli.history` | `hyseed history` を実行 |
+| `kbmcp.cli.vaultList` | `hyseed vault list` を実行 |
+| `kbmcp.cli.vaultCreate` | `hyseed vault create` を実行 |
+| `kbmcp.cli.vaultSwitch` | `hyseed vault switch` を実行 |
+| `kbmcp.cli.vaultStatus` | `hyseed vault status` を実行 |
+| `kbmcp.cli.skillsList` | `hyseed skills list` を実行 |
+| `kbmcp.cli.skillsShow` | `hyseed skills show` を実行 |
+| `kbmcp.cli.skillsAdd` | `hyseed skills add` を実行 |
+| `kbmcp.cli.skillsRemove` | `hyseed skills remove` を実行 |
+| `kbmcp.cli.serveHttp` | `hyseed serve`（HTTP）を実行 |
+
+CLI コマンドは専用の `hyseed` ターミナルで実行します。`"`、`%`、`!`、改行を含む値は
+安全のため拒否されます。そのような場合はご自身のターミナルで実行してください。
 
 ## 設定
 
-| 設定 | 既定値 | 意味 |
+| 設定 | 既定値 | 説明 |
 |---|---|---|
-| `kbMcp.runtimePath` | `""` | `hyseed.exe` の明示パス。空＝自動検出。 |
-| `kbMcp.adminPort` | `51888` | 管理コンソールの優先ポート。使用中は次の空きポートを使用。 |
-| `kbMcp.dataRoot` | `""` | 明示的なデータルート（起動するサーバーに `KB_MCP_HOME` を設定）。空＝ランタイムの既定。 |
-| `kbMcp.projectVault` | `""` | ワークスペースに固定した vault。MCP 定義プロバイダーが `KB_MCP_VAULT` として渡す。 |
-| `kbMcp.converterPath` | `""` | `doc-convert.exe`（または `.cmd` ラッパー）の明示パス。空＝自動検出。マシンスコープのため、ワークスペース設定では実行ファイルを指定できません。 |
-
-## データルート
-
-`kbMcp.dataRoot` が空のとき、hyseed ランタイムは次の順でデータルートを解決します：
-
-1. `KB_MCP_HOME`（拡張機能が `kbMcp.dataRoot` から設定）；
-2. `~/.config/hyseed/config.yaml` の `data_dir`（新しいファイルがない場合は改名前の
-   `~/.config/kb-mcp/config.yaml` を読む）；
-3. 凍結ビルド：`<exe フォルダー>\data` — 同梱の `resources\hyseed.exe` は拡張機能ディレクトリ内の
-   data フォルダーを既定にします；
-4. `~/.local/share/hyseed`。
-
-拡張機能の更新をまたいでナレッジベースを安定させたい場合は `kbMcp.dataRoot` を設定してください。
-
-## Vault
-
-`hyseed: vault を作成` には 2 つのスコープがあります：
-
-- **global** — グローバルデータルート内の vault。既定にできます（`hyseed vault switch`）。
-- **project** — vault 自体はグローバルデータルートに作成されますが、このワークスペースがそれに
-  固定されます：`.vscode/settings.json` の `kbMcp.projectVault`（MCP プロバイダーが使用）と、
-  `.mcp.json` に project スコープの `hyseed` エントリが既にある場合はその `env` の
-  `KB_MCP_VAULT`。グローバルの current vault は変わりません。
-
-`.mcp.json` の編集はバックアップ（`.mcp.json.bak-<タイムスタンプ>`）を取り、アトミックに書き込み、
-結果を検証します。project エントリがまだない場合は、project スコープで
-`hyseed: エージェントスキルをインストール` を実行してから再ピンしてください。
-
-`--force` 付きでスキルインストーラーを再実行するとエントリが書き換えられ、env キーが失われる
-ことがあります。同じ名前で `hyseed: vault を作成` を再実行（冪等）して再ピンしてください。
-
-## ターミナル内の CLI
-
-`hyseed: CLI …` コマンドは必要な引数を尋ね、専用の **hyseed** ターミナル（固定 `cmd.exe`、
-AutoRun 無効）で対応する `hyseed` コマンドを実行します。出力が表示され、`Ctrl+C` が効き、
-コピーできます。各実行では次の順に送信します：
-
-1. `kbMcp.dataRoot` が設定されていれば `set "KB_MCP_HOME=…"`、`kbMcp.projectVault` が
-   設定されていれば `set "KB_MCP_VAULT=…"`；
-2. `CLI HTTP サービス` の場合は `set /p KB_MCP_HTTP_TOKEN=<"<token ファイル>"` — token の値は
-   コマンドラインに現れません。ファイルは `%USERPROFILE%\.hyseed-http-token`、新しいファイルが
-   ない場合は改名前の `.kb-mcp-http-token` を使用し、どちらもない場合は新しい 32 桁 hex token の
-   生成を提案します；
-3. コマンドライン本体；
-4. `echo [hyseed exit=%errorlevel%]`。
-
-引数は自動的に引用符で囲まれます（空白とシェルメタ文字）。`"`、`%`、`!`、改行を含む値は
-エスケープせず拒否します — そのようなコマンドはご自身のターミナルで実行してください。
-
-## 実行ファイルの解決順
-
-1. `kbMcp.runtimePath` 設定
-2. `%USERPROFILE%\.local\bin`（`hyseed.exe`、次に `kb-mcp.exe`）
-3. `%USERPROFILE%\.local\share\hyseed`（旧 `share\kb-mcp` も許容）
-4. `PATH`（`hyseed`、次に `kb-mcp`）
-5. 拡張機能に同梱のコピー（`resources\hyseed.exe`）
-
-`--version` に応答した最初の候補が採用されます。明示的に設定したパスが使えない場合は、
-黙ってフォールバックせずエラーになります。
-
-## ドキュメントコンバーターの解決順
-
-`hyseed ingest` にはドキュメントコンバーターが必要です。拡張機能はサーバー起動時と CLI ingest の
-たびに次の順で解決します：
-
-1. `kbMcp.converterPath` 設定
-2. `KB_INGEST_CONVERTER` 環境変数
-3. 解決済み `hyseed.exe` と同じディレクトリの `doc-convert.exe`
-4. 開いているワークスペースの `ingestion-rt\doc-convert.exe`
-5. 拡張機能に同梱のコピー（`resources\doc-convert.exe`）
-
-明示設定と環境変数はそのまま使用されます。パスを間違えると黙ってフォールバックせず ingest が
-失敗します。admin サーバーには `KB_INGEST_CONVERTER` として渡され、`hyseed: ingest` は
-`--converter <path>` を付加します。
+| `kbMcp.runtimePath` | `""` | `hyseed.exe` を指定。空 = 自動検出 |
+| `kbMcp.adminPort` | `51888` | 管理ポート。使用中なら次の空きポート |
+| `kbMcp.adminHost` | `127.0.0.1` | バインド先。非ループバックは認証なしで公開されます |
+| `kbMcp.mcpHost` | `127.0.0.1` | MCP HTTP のバインド先。非ループバックはトークンとファイアウォール設定が必要 |
+| `kbMcp.dataRoot` | `""` | データフォルダーを指定。空 = 既定 |
+| `kbMcp.projectVault` | `""` | ワークスペースで固定する保管庫 |
+| `kbMcp.converterPath` | `""` | `doc-convert.exe` を指定。空 = 自動検出 |
 
 ## トラブルシューティング
 
-| 現象 | 対処 |
+| 症状 | 対処 |
 |---|---|
-| ポート 51888 が使用中 | 拡張機能が次の空きポートを選びます。ステータスバーと管理タブに実際のポートが表示されます。 |
-| 別の hyseed コンソールが既に実行中 | 外部インスタンスとして再利用されます。`停止` は拡張機能が所有しないインスタンスを強制終了しません。 |
-| 停止後もポートが開いたまま | エラーにポートと PID、手動コマンド `taskkill /PID <pid> /T /F` が表示されます。 |
-| `hyseed.exe` が見つからない | `hyseed: ランタイム情報を表示` で各候補とプローブエラーを確認し、`kbMcp.runtimePath` を設定してください。同梱コピーが最後のフォールバックです。 |
-| `hyseed ingest` が「no document converter found」で失敗する | `kbMcp.converterPath` に `doc-convert.exe` を設定してください。通常は同梱コピーか `hyseed.exe` と同じ場所のコピーが見つかります。設定変更後はサーバーを再起動してください。 |
-| HTTP サービスが token で失敗し続ける | token ファイルは `%USERPROFILE%\.hyseed-http-token`。32 桁 hex token の生成プロンプトに従うか、ファイルを自分で作成してください。 |
-| プロジェクト vault のピンが消えた | `skills add --force` が `.mcp.json` エントリを書き換えます。同じ名前で `hyseed: vault を作成` を再実行（冪等）してください。 |
-| CLI コマンドが引数を拒否する | `"`、`%`、`!`、改行は設計上拒否されます。ご自身のターミナルで実行してください。 |
-| 管理タブが空 | サーバーを起動して `hyseed: ログを表示` を確認し、ポートを他のプログラムが占有していないか確認してください。 |
+| ポート 51888 が使用中 | 次の空きポートを自動で使用します |
+| `hyseed.exe` が見つからない | `hyseed: Show runtime info` を確認、または `kbMcp.runtimePath` を設定 |
+| 取り込みで変換ツールが見つからない | `kbMcp.converterPath` に `doc-convert.exe` を設定し、サーバーを再起動 |
+| 停止後もポートが開いたまま | エラーに表示される PID を `taskkill /PID <pid> /T /F` で終了 |
+| 管理タブが空 | サーバーを起動し、`hyseed: Show logs` を確認 |
 
-## セキュリティ
+## プライバシー
 
-- 管理サーバーは `127.0.0.1` のみにバインドします。コンソールには**認証がありません** —
-  ローカル専用の画面として扱い、ポートをネットワークに公開しないでください。
-- `hyseed serve --transport http` は `KB_MCP_HTTP_TOKEN` を必要とします。拡張機能は token
-  ファイルから読み取り、値をコマンドラインに置くことはありません。
-- 拡張機能は資格情報を保存せず、プロジェクトの秘密ファイルも読みません。
-- エージェントホストのファイル（`~/.claude.json`、Codex／Cline 設定）は `hyseed` CLI だけが
-  書き込み、書き込み前にタイムスタンプ付きバックアップを取り、アトミックに置換します。
+管理コンソールと MCP サーバーは既定でループバックにのみバインドされます。管理コンソールには
+認証がないため、信頼できるネットワークでのみ公開してください。認証情報はユーザープロファイル
+に保存され、拡張機能には保存されません。エージェント側の設定ファイルは `hyseed` CLI だけが
+バックアップ付きで書き込みます。
 
 ## 開発
 
 ```bash
-npm install
-npm run build        # dist/extension.js にバンドル
-npm run watch        # 増分ビルド
-npm run typecheck
-npm run check:docs   # README／コマンド／設定／VSIX 内容の整合性
-npm run package      # build + ランタイム同梱 + check:docs + vsce package --target win32-x64
+npm install && npm run build     # dist/extension.js
+npm run typecheck && npm test
+npm run check:docs && npm run package
 ```
 
-F5 で拡張機能ホストを起動します。テストはサンドボックス（一時 `KB_MCP_HOME`、一時ポート）で
-実行され、実際のデータルートや `config.yaml` には触れません。
+製品ポータルは `portal/`（独立した Next.js サイト）にあります。`portal/README.md` を参照してください。
 
 ## ライセンス
 
-MIT。同梱の `hyseed.exe` は hyseed プロジェクト（MIT）の一部です。hyseed（旧 kb-mcp）の
-貢献者に感謝します。
+MIT。

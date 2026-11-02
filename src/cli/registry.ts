@@ -6,6 +6,7 @@
  */
 
 import { COMMANDS } from "../constants";
+import { DEFAULT_HOST, hostPort, isNonLoopback } from "../host";
 import type { CliRunResult } from "../mcp/skillsCli";
 import { parseSkillsList } from "../mcp/report";
 import { listVaults } from "../vaults/vaults";
@@ -31,6 +32,8 @@ export interface CliContext {
   run(exe: string, args: string[], cwd?: string): Promise<CliRunResult>;
   /** Resolved document converter for `ingest`; absent = let the CLI discover one. */
   converter?: string;
+  /** Bind address for `serve --transport http`; defaults to loopback. */
+  host?: string;
 }
 
 export interface CliInvocation {
@@ -291,7 +294,7 @@ export const CLI_COMMANDS: Record<string, CliCommandSpec> = {
 
   [COMMANDS.cliServeHttp]: {
     prompts: ["port", "confirm"],
-    async build(ui) {
+    async build(ui, ctx) {
       const raw = await ui.input({ title: "HTTP port", value: "8000" });
       if (raw === undefined) return null;
       const port = Number(raw.trim());
@@ -299,13 +302,17 @@ export const CLI_COMMANDS: Record<string, CliCommandSpec> = {
         ui.error("port must be an integer between 1 and 65535");
         return null;
       }
-      const ok = await ui.confirm(
-        `Serve over HTTP on 127.0.0.1:${port}?`,
-        "Requires the HTTP token; Ctrl+C in the terminal stops the server."
-      );
-      return ok
-        ? { args: ["serve", "--transport", "http", "--port", String(port)], needsToken: true }
-        : null;
+      const host = ctx.host ?? DEFAULT_HOST;
+      const detail = isNonLoopback(host)
+        ? "Set KB_MCP_HTTP_TOKEN and allow this port through the firewall: the bind address is reachable from your network. Ctrl+C in the terminal stops the server."
+        : "Requires the HTTP token; Ctrl+C in the terminal stops the server.";
+      const ok = await ui.confirm(`Serve over HTTP on ${hostPort(host, port)}?`, detail);
+      if (!ok) return null;
+      const args =
+        host === DEFAULT_HOST
+          ? ["serve", "--transport", "http", "--port", String(port)]
+          : ["serve", "--transport", "http", "--host", host, "--port", String(port)];
+      return { args, needsToken: true };
     },
   },
 };

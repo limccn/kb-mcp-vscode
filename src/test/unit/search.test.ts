@@ -135,4 +135,23 @@ describe("httpJson", () => {
   it("surfaces the admin error message", async () => {
     await assert.rejects(httpJson(port, "/bad"), /HTTP 400: bad query/);
   });
+
+  it("connects to the host in options instead of loopback", async () => {
+    const alt = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end("{}");
+    });
+    const bound = await new Promise<boolean>((resolve) => {
+      alt.once("error", () => resolve(false));
+      alt.listen(0, "127.0.0.2", () => resolve(true));
+    });
+    if (!bound) return; // platform without additional loopback aliases
+    const altPort = (alt.address() as AddressInfo).port;
+    try {
+      await httpJson(altPort, "/", { host: "127.0.0.2" });
+      await assert.rejects(httpJson(altPort, "/"));
+    } finally {
+      await new Promise<void>((resolve) => alt.close(() => resolve()));
+    }
+  });
 });

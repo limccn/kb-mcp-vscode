@@ -1,21 +1,23 @@
 /**
  * Single point for every rename-sensitive name.
- * Old kb-mcp names are compatibility candidates only; never surface them in user-visible copy.
- * If the product is renamed again, this file (plus package.json displayName/titles) is the only
- * place to touch.
+ * 0.2.0 retires the pre-rename kb-mcp runtime candidates: only the hyseed names
+ * resolve. Legacy data locations are reported by `hyseed home inspect` (the
+ * runtime owns that scan), never by a name list here.
+ * If the product is renamed again, this file (plus package.json displayName/titles)
+ * is the only place to touch.
  */
 
 /** User-visible product name. */
 export const DISPLAY_NAME = "hyseed";
 
-/** Executable candidates, highest priority first. kb-mcp.exe is a compatibility fallback. */
-export const EXE_NAMES = ["hyseed.exe", "kb-mcp.exe"] as const;
+/** Executable candidates, highest priority first. */
+export const EXE_NAMES = ["hyseed.exe"] as const;
 
 /** CLI names looked up on PATH, highest priority first. */
-export const PATH_CLI_NAMES = ["hyseed", "kb-mcp"] as const;
+export const PATH_CLI_NAMES = ["hyseed"] as const;
 
 /** Directories under %USERPROFILE% probed for the executable, in order. */
-export const PROBE_DIRS = [".local/bin", `.local/share/${DISPLAY_NAME}`, ".local/share/kb-mcp"] as const;
+export const PROBE_DIRS = [".local/bin", `.local/share/${DISPLAY_NAME}`] as const;
 
 /** Version line accepted from `--version` probes (never pin an exact version here). */
 export const VERSION_LINE_RE = /^(hyseed|kb), version \d+\.\d+\.\d+/;
@@ -30,6 +32,10 @@ export const DEFAULT_ADMIN_PORT = 51888;
 /** Webview panel identity. */
 export const PANEL_VIEW_TYPE = "kbmcp.admin";
 export const PANEL_TITLE = "hyseed admin";
+
+/** First-run / major-upgrade setup guide (singleton webview). */
+export const ONBOARDING_VIEW_TYPE = "kbmcp.setupGuide";
+export const ONBOARDING_TITLE = "hyseed setup guide";
 
 /** User-visible prefix for command titles, notifications, status bar and terminal names. */
 export const PANEL_PREFIX = "hyseed:";
@@ -50,12 +56,15 @@ export const COMMANDS = {
   showLogs: `${COMMAND_PREFIX}.showLogs`,
   showMcpStatus: `${COMMAND_PREFIX}.showMcpStatus`,
   installAgentSkills: `${COMMAND_PREFIX}.installAgentSkills`,
+  installCliTools: `${COMMAND_PREFIX}.installCliTools`,
   removeAgentSkills: `${COMMAND_PREFIX}.removeAgentSkills`,
   showSkillsState: `${COMMAND_PREFIX}.showSkillsState`,
   createVault: `${COMMAND_PREFIX}.createVault`,
   switchVault: `${COMMAND_PREFIX}.switchVault`,
   clearProjectVault: `${COMMAND_PREFIX}.clearProjectVault`,
   listVaults: `${COMMAND_PREFIX}.listVaults`,
+  resumeMigration: `${COMMAND_PREFIX}.resumeMigration`,
+  openSetupGuide: `${COMMAND_PREFIX}.openSetupGuide`,
   cliSearch: `${COMMAND_PREFIX}.cli.search`,
   cliGet: `${COMMAND_PREFIX}.cli.get`,
   cliList: `${COMMAND_PREFIX}.cli.list`,
@@ -87,9 +96,8 @@ export const CLI_COMMAND_IDS = Object.entries(COMMANDS)
 /** Terminal that palette CLI commands run in (user-visible name). */
 export const CLI_TERMINAL_NAME = DISPLAY_NAME;
 
-/** HTTP token file under the user profile; the legacy name is only a compatibility fallback. */
+/** HTTP token file under the user profile (0.2.0 reads only this name). */
 export const TOKEN_FILE_NAME = `.${DISPLAY_NAME}-http-token`;
-export const LEGACY_TOKEN_FILE_NAME = ".kb-mcp-http-token";
 
 /** MCP definition provider (technical id stays; label is user-visible). */
 export const MCP_PROVIDER_ID = `${COMMAND_PREFIX}.vscode`;
@@ -104,6 +112,7 @@ export const LAUNCHER_VIEW_ID = `${COMMAND_PREFIX}.launcher`;
 
 /** Probe / lifecycle timeouts and port scanning limits. */
 export const PROBE_TIMEOUT_MS = 15_000;
+export const ADMIN_HOST_PROBE_TIMEOUT_MS = 15_000;
 export const HTTP_PROBE_TIMEOUT_MS = 2_000;
 export const SERVER_START_TIMEOUT_MS = 30_000;
 export const PORT_RELEASE_TIMEOUT_MS = 5_000;

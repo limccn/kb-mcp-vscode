@@ -56,6 +56,8 @@ interface OpsOptions extends Partial<ServerOps> {
   portCloses?: boolean;
   dataRoot?: string;
   adminPort?: number;
+  adminHost?: string;
+  adminHostSupported?: boolean;
   converter?: string;
 }
 
@@ -75,6 +77,8 @@ function makeOps(options: OpsOptions = {}): TestOps {
     readConfig: () => ({
       runtimePath: "",
       adminPort: options.adminPort ?? 8888,
+      adminHost: options.adminHost ?? "127.0.0.1",
+      mcpHost: "127.0.0.1",
       dataRoot: options.dataRoot ?? "",
       projectVault: "",
       converterPath: "",
@@ -87,16 +91,29 @@ function makeOps(options: OpsOptions = {}): TestOps {
       );
       return child;
     },
-    isPortOpen: async (port) => openPorts.has(port),
-    probeAdminPage: async (port) => (options.page ?? (() => "ours"))(port),
+    isPortOpen: async (host, port) => {
+      calls.push(`isPortOpen ${host} ${port}`);
+      return openPorts.has(port);
+    },
+    probeAdminPage: async (host, port) => {
+      calls.push(`probeAdminPage ${host} ${port}`);
+      return (options.page ?? (() => "ours"))(port);
+    },
     waitForPortOpen: async () => options.portOpens ?? true,
     waitForPortClosed: async () => options.portCloses ?? true,
-    findFreePort: async (preferred) => {
-      calls.push(`findFreePort ${preferred}`);
+    findFreePort: async (host, preferred) => {
+      calls.push(`findFreePort ${host} ${preferred}`);
       return preferred + 1;
     },
     killTree: async (pid) => {
       calls.push(`killTree ${pid}`);
+    },
+    supportsAdminHost: async (exePath) => {
+      calls.push(`supportsAdminHost ${exePath}`);
+      return options.adminHostSupported ?? true;
+    },
+    warnAdminHost: (host) => {
+      calls.push(`warnAdminHost ${host}`);
     },
   };
   return ops;
@@ -111,7 +128,53 @@ describe("ServerManager lifecycle", () => {
     assert.equal(status.port, 8888);
     const spawnCall = ops.calls.find((c) => c.startsWith("spawn"));
     assert.ok(spawnCall?.includes("admin start --port 8888"));
+    assert.ok(!spawnCall?.includes("--host"));
     assert.ok(spawnCall?.includes("cwd=C:\\tools"));
+    assert.equal(status.host, "127.0.0.1");
+  });
+
+  it("does not probe or warn for the default host", async () => {
+    const ops = makeOps();
+    const manager = new ServerManager(ops);
+    await manager.ensureRunning();
+    assert.ok(!ops.calls.some((c) => c.startsWith("supportsAdminHost")));
+    assert.ok(!ops.calls.some((c) => c.startsWith("warnAdminHost")));
+  });
+
+  it("binds a custom host and connects through its loopback alias", async () => {
+    const ops = makeOps({ adminHost: "0.0.0.0" });
+    const manager = new ServerManager(ops);
+    const status = await manager.ensureRunning();
+    assert.equal(status.host, "0.0.0.0");
+    assert.ok(ops.calls.includes("warnAdminHost 0.0.0.0"));
+    assert.ok(ops.calls.includes(`supportsAdminHost ${EXE}`));
+    assert.ok(
+      ops.calls.some((c) => c.includes("admin start --host 0.0.0.0 --port 8888"))
+    );
+    assert.ok(ops.calls.includes("isPortOpen 127.0.0.1 8888"));
+    assert.ok(ops.calls.includes("probeAdminPage 127.0.0.1 8888"));
+  });
+
+  it("refuses to spawn a runtime without admin --host support", async () => {
+    const ops = makeOps({ adminHost: "0.0.0.0", adminHostSupported: false });
+    const manager = new ServerManager(ops);
+    await assert.rejects(
+      () => manager.ensureRunning(),
+      /does not support 'admin start --host'/
+    );
+    assert.ok(!ops.calls.some((c) => c.startsWith("spawn")));
+    assert.equal(manager.getStatus().state, "error");
+    assert.equal(manager.getStatus().host, "0.0.0.0");
+  });
+
+  it("reuses an external instance on the configured connect address", async () => {
+    const ops = makeOps({ openPorts: [8888], adminHost: "::1" });
+    const manager = new ServerManager(ops);
+    const status = await manager.ensureRunning();
+    assert.equal(status.state, "running-external");
+    assert.equal(status.host, "::1");
+    assert.ok(ops.calls.includes("isPortOpen ::1 8888"));
+    assert.ok(!ops.calls.some((c) => c.startsWith("spawn")));
   });
 
   it("passes the data root through KB_MCP_HOME", async () => {
@@ -155,7 +218,7 @@ describe("ServerManager lifecycle", () => {
     const status = await manager.ensureRunning();
     assert.equal(status.state, "running-own");
     assert.equal(status.port, 8889);
-    assert.ok(ops.calls.some((c) => c === "findFreePort 8888"));
+    assert.ok(ops.calls.some((c) => c === "findFreePort 127.0.0.1 8888"));
     assert.ok(ops.calls.some((c) => c.includes("--port 8889")));
   });
 
